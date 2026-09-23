@@ -16,6 +16,7 @@ import { createLayerStates } from './layer-store';
 import type { LayerState } from './layer-store';
 import { deriveBoardView } from './derive-board-view';
 import type { FoldMode } from './derive-board-view';
+import { boardLifecycleController } from '../photo-overlay/board-lifecycle-controller';
 
 
 export interface SelectionState {
@@ -610,6 +611,11 @@ class BoardStore extends Emitter {
     // flags change under an active highlight, so Settings ▸ Part Types toggles
     // take effect without re-selecting the net. Singleton — never unsubscribed.
     renderSettingsStore.subscribe(() => this.refreshAdjacency());
+    // Der Overlay-Lifecycle braucht die Subboard-Auswahl des Tabs, um
+    // 'active' Subboards adressierbar zu machen (ohne Import-Zyklus).
+    boardLifecycleController.setSelectedBoardIndexProvider(
+      (tabId) => this._overlaySelectedBoardIndex(tabId),
+    );
   }
 
   get tabs(): BoardTab[] { return this._tabs; }
@@ -639,6 +645,11 @@ class BoardStore extends Emitter {
 
   get activeTab(): BoardTab | null {
     return this._tabs.find(t => t.id === this._activeTabId) ?? null;
+  }
+
+  /** Subboard-Index-Auswahl des Board-Lifecycle-Controllers abfragen. */
+  private _overlaySelectedBoardIndex(tabId: number): number | null {
+    return this._tabs.find(t => t.id === tabId)?.selectedBoardIndex ?? null;
   }
 
   /** Identity of every open board tab, for session persistence. fileSize /
@@ -925,6 +936,9 @@ class BoardStore extends Emitter {
   private applyCachedBoard(tab: BoardTab, cached: BoardData, fileName: string, fileSize: number, lastModified: number): void {
     flagMechanicalParts(cached.parts);
     tab.board = cached;
+    // Overlay-Metadaten laden (fire-and-forget — Fehler im Overlay-Lauf darf
+    // den Board-Ladevorgang niemals blockieren).
+    void boardLifecycleController.attachBoard(tab.id, cached);
     applyPackDefaults(tab, cached);
     invalidateDerivedBoard(tab);
     applyBoardFilters(tab);
@@ -1112,6 +1126,8 @@ class BoardStore extends Emitter {
         }
 
         this.autoBindBoard(file.name);
+        // Overlay-Metadaten laden (fire-and-forget; siehe attachBoard-Doku).
+        void boardLifecycleController.attachBoard(id, board);
       } catch (err) {
         log.parser.error(`Failed to load ${file.name}:`, err);
         const errMsg = err instanceof Error ? err.message : String(err);
@@ -1148,6 +1164,7 @@ class BoardStore extends Emitter {
     const tab = this.makeTab(fileName);
     this.applyCachedBoard(tab, cached, fileName, fileSize, lastModified);
     this.onTabCreated?.(tab.id, fileName);
+    void boardLifecycleController.attachBoard(tab.id, cached);
     this.notify();
     return true;
   }
@@ -1276,6 +1293,7 @@ class BoardStore extends Emitter {
     this._tabs.push(tab);
     this._activeTabId = id;
     this.notify();
+    void boardLifecycleController.attachBoard(id, board);
   }
 
   /** Evict the cache entry for the given board data (call after a scene build failure). */
@@ -1290,6 +1308,9 @@ class BoardStore extends Emitter {
   switchTab(tabId: number) {
     if (this._tabs.some(t => t.id === tabId) && this._activeTabId !== tabId) {
       this._activeTabId = tabId;
+      // Szenenwechsel: Render-Bitmaps inaktiver Boards freigeben, aktives
+      // Board + Metadaten bleiben erhalten.
+      boardLifecycleController.onActiveTabChanged(tabId);
       this.notify();
     }
   }
@@ -1318,6 +1339,9 @@ class BoardStore extends Emitter {
 
     this._tabs.splice(idx, 1);
     this.onTabClosed?.(tabId);
+    // Overlay-Laufzeitzustand des Tabs freigeben (releaseBoard je Key,
+    // releaseAll wenn kein Board-Tab mehr offen ist).
+    boardLifecycleController.releaseBoardTab(tabId);
 
     if (this._activeTabId === tabId) {
       if (this._tabs.length > 0) {

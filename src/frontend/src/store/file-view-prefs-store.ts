@@ -26,7 +26,11 @@
 
 const DB_NAME = 'boardripper-file-view-prefs';
 const STORE_NAME = 'prefs';
-const DB_VERSION = 1;
+/** Version 2: neuer Store `overlay-prefs` für PCB-Foto-Overlay-Anzeigepräferenzen
+ *  (siehe photo-overlay/view-preferences.ts). Bestehende `prefs`-Daten bleiben
+ *  unverändert lesbar — der Upgrade-Task legt nur den zusätzlichen Store an. */
+const DB_VERSION = 2;
+export const OVERLAY_PREFS_STORE_NAME = 'overlay-prefs';
 
 export interface FileViewPrefs {
   /** Composite key: `${name}:${size}:${lastModified}`. */
@@ -66,6 +70,9 @@ class FileViewPrefsStore {
         const db = req.result;
         if (!db.objectStoreNames.contains(STORE_NAME)) {
           db.createObjectStore(STORE_NAME, { keyPath: 'fileKey' });
+        }
+        if (!db.objectStoreNames.contains(OVERLAY_PREFS_STORE_NAME)) {
+          db.createObjectStore(OVERLAY_PREFS_STORE_NAME, { keyPath: 'key' });
         }
       };
     });
@@ -149,6 +156,63 @@ class FileViewPrefsStore {
       /* swallow */
     }
   }
+
+  /** Lies Overlay-Anzeigepräferenzen per Roh-Schlüssel (boardKey|side).
+   *  Gibt `null` zurück, wenn kein Eintrag existiert. */
+  async getOverlayPrefs(key: string): Promise<OverlayPrefsRecord | null> {
+    try {
+      const db = await this.openDb();
+      return await new Promise<OverlayPrefsRecord | null>((resolve) => {
+        const tx = db.transaction(OVERLAY_PREFS_STORE_NAME, 'readonly');
+        const req = tx.objectStore(OVERLAY_PREFS_STORE_NAME).get(key);
+        req.onsuccess = () => resolve(req.result ?? null);
+        req.onerror = () => resolve(null);
+      });
+    } catch {
+      return null;
+    }
+  }
+
+  /** Upsert Overlay-Anzeigepräferenzen per Roh-Schlüssel (boardKey|side). */
+  async putOverlayPrefs(
+    key: string,
+    prefs: Omit<OverlayPrefsRecord, 'key'>,
+  ): Promise<void> {
+    try {
+      const db = await this.openDb();
+      await new Promise<void>((resolve) => {
+        const tx = db.transaction(OVERLAY_PREFS_STORE_NAME, 'readwrite');
+        tx.objectStore(OVERLAY_PREFS_STORE_NAME).put({ ...prefs, key });
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => resolve();
+        tx.onabort = () => resolve();
+      });
+    } catch {
+      /* swallow — Anzeigepräferenzen sind Convenience, keine Korrektheitsfrage */
+    }
+  }
+
+  /** Löscht Overlay-Anzeigepräferenzen per Roh-Schlüssel (boardKey|side). */
+  async deleteOverlayPrefs(key: string): Promise<void> {
+    try {
+      const db = await this.openDb();
+      await new Promise<void>((resolve) => {
+        const tx = db.transaction(OVERLAY_PREFS_STORE_NAME, 'readwrite');
+        tx.objectStore(OVERLAY_PREFS_STORE_NAME).delete(key);
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => resolve();
+        tx.onabort = () => resolve();
+      });
+    } catch {
+      /* swallow */
+    }
+  }
+}
+
+export interface OverlayPrefsRecord {
+  key: string;
+  visible: boolean;
+  opacity: number;
 }
 
 export const fileViewPrefsStore = new FileViewPrefsStore();

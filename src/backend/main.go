@@ -18,6 +18,7 @@ import (
 	"encoding/json"
 
 	"boardripper/boarddb"
+	"boardripper/boardphotos"
 	"boardripper/databank"
 	"boardripper/handlers"
 	"boardripper/librarysync"
@@ -329,6 +330,21 @@ func main() {
 	obdStore := obd.NewStore(obdRoot)
 	obdScraper := obd.NewScraper("https://openboarddata.org")
 	obdHandler := handlers.NewObdHandler(obdStore, obdScraper)
+	// Board photo overlays: metadata lives in databank.db (databank.Open ran
+	// the migration), image files under DATA_DIR/board-overlays. The root is
+	// created lazily on first import; the store itself stays cheap.
+	boardPhotoStore := boardphotos.NewStore(db)
+	boardPhotoService := boardphotos.NewService(boardPhotoStore, filepath.Join(dataDir, "board-overlays"))
+	boardPhotoHandler := handlers.NewBoardPhotoAssetsHandler(boardPhotoService, boardPhotoStore)
+	mux.HandleFunc("GET /api/board-photo-assets/{boardKey}", read(boardPhotoHandler.Get))
+	mux.HandleFunc("PUT /api/board-photo-assets/{boardKey}/mask", write(boardPhotoHandler.PutMask))
+	// Multipart image upload: no write() wrapper — the body can stream for
+	// the full 50 MiB and the import re-encodes on its own budget.
+	mux.HandleFunc("PUT /api/board-photo-assets/{boardKey}/overlays/{side}", boardPhotoHandler.PutOverlay)
+	mux.HandleFunc("PUT /api/board-photo-assets/{boardKey}/overlays/{side}/calibration", write(boardPhotoHandler.PutCalibration))
+	mux.HandleFunc("DELETE /api/board-photo-assets/{boardKey}/overlays/{side}", write(boardPhotoHandler.DeleteOverlay))
+	// Private image delivery for source and render copies.
+	mux.HandleFunc("GET /api/board-photo-assets/{boardKey}/overlays/{side}/{kind}", boardPhotoHandler.GetImage)
 	mux.HandleFunc("POST /api/obd/index/sync", obdHandler.IndexSync) // long-running — no wrap
 	mux.HandleFunc("GET /api/obd/match", read(obdHandler.Match))
 	mux.HandleFunc("GET /api/obd/data", read(obdHandler.Data))

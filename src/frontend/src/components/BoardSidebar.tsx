@@ -2,6 +2,7 @@ import { useState, useMemo, useEffect, useRef, useCallback } from 'react';
 import {
   IconPin, IconPinFilled, IconChevronRight, IconChevronDown,
   IconInfoCircle, IconStack2, IconEye, IconSearch, IconVersions, IconChecklist,
+  IconPhoto,
 } from '@tabler/icons-react';
 import { useBoardStore } from '../hooks/useBoardStore';
 import { useWorklist } from '../hooks/useWorklist';
@@ -18,8 +19,9 @@ import { WorklistPanel } from '../panels/WorklistPanel';
 import { bomReasonLabel, type BoardData, type Part } from '../parsers';
 import { pinDisplayId } from '../parsers/types';
 import { setActiveSearchInput, getActiveSearchInput } from './BoardSidebar.utils';
+import { PhotoOverlayIntegration } from './photo-overlay/PhotoOverlayIntegration';
 
-type SidebarTab = 'layers' | 'info' | 'search' | 'revisions' | 'worklist';
+type SidebarTab = 'layers' | 'info' | 'search' | 'revisions' | 'worklist' | 'photos';
 
 const EMPTY_GHOST_SWAPS: ReadonlySet<string> = new Set();
 const EMPTY_BOM_SELECTIONS: ReadonlyMap<string, string> = new Map();
@@ -236,6 +238,16 @@ export function BoardSidebar({ visible, tabId, requestedTab, onTabApplied }: Boa
             <IconChecklist size={16} />
             {activeTab === 'worklist' && <span className="icon-tab-caption">Worklist</span>}
           </button>
+          <button
+            className={`library-tab icon-tab ${activeTab === 'photos' ? 'active' : ''}`}
+            data-board-tab="photos"
+            onClick={() => pickTab('photos')}
+            data-title="Fotos"
+            aria-label="Fotos"
+          >
+            <IconPhoto size={16} />
+            {activeTab === 'photos' && <span className="icon-tab-caption">Fotos</span>}
+          </button>
         </div>
       </div>
       <div className="board-sidebar-content">
@@ -244,6 +256,7 @@ export function BoardSidebar({ visible, tabId, requestedTab, onTabApplied }: Boa
         {activeTab === 'search' && <SearchTab tabId={tabId} />}
         {activeTab === 'revisions' && showRevisionsTab && <RevisionsTab tabId={tabId} />}
         {activeTab === 'worklist' && <WorklistPanel />}
+        {activeTab === 'photos' && <PhotoOverlayIntegration tabId={tabId} board={board} />}
       </div>
     </div>
   );

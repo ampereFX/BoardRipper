@@ -69,6 +69,14 @@ func (db *DB) Conn() *sql.DB {
 	return db.reader
 }
 
+// Writer returns the single-connection write pool for stores that live in
+// their own package (e.g. boardphotos) and share this SQLite file. Writes
+// through it are serialised by SQLite itself (MaxOpenConns=1) and callers
+// wrap multi-statement work in their own transactions.
+func (db *DB) Writer() *sql.DB {
+	return db.writer
+}
+
 // sizeBytes returns the logical database size (page_count * page_size). In WAL
 // mode this tracks the main file closely without any filesystem access.
 func (db *DB) sizeBytes() (int64, error) {
@@ -136,7 +144,7 @@ func (db *DB) CompactIfBloated() (before int64, after int64, err error) {
 	return db.Compact()
 }
 
-const schemaVersion = 11
+const schemaVersion = 12
 
 func (db *DB) migrate() error {
 	// Create version table if not exists
@@ -205,6 +213,11 @@ func (db *DB) migrate() error {
 	if ver < 11 {
 		if err := db.migrateV11(); err != nil {
 			return fmt.Errorf("v11: %w", err)
+		}
+	}
+	if ver < 12 {
+		if err := db.migrateV12(); err != nil {
+			return fmt.Errorf("v12: %w", err)
 		}
 	}
 
@@ -627,6 +640,64 @@ func (db *DB) migrateV11() error {
 	if _, err := tx.Exec(`INSERT INTO schema_version (version) VALUES (?)`, 11); err != nil {
 		return err
 	}
+	return tx.Commit()
+}
+
+// migrateV12 adds the PCB photo-overlay tables. board_photo_assets holds one
+// row per unique sub-board geometry: board_key uses the frontend subboard-key
+// format "<geometry_fingerprint>#<occurrence_index>" with a UNIQUE constraint,
+// and the fingerprint plus occurrence are also stored separately for direct
+// queries. board_photo_overlays holds one row per photographed side (top or
+// bottom) of an asset, with source/render paths, metadata and calibration.
+// Photo data is library metadata, not scan state: ResetAll deletes only
+// bindings/files and must leave these tables untouched. UUID ids match the
+// frontend OverlayAssetMetadata.id (crypto.randomUUID, v4 format).
+func (db *DB) migrateV12() error {
+	tx, err := db.writer.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	stmts := []string{
+		`CREATE TABLE IF NOT EXISTS board_photo_assets (
+			id                   TEXT PRIMARY KEY,
+			board_key            TEXT NOT NULL UNIQUE,
+			geometry_fingerprint TEXT NOT NULL,
+			occurrence_index     INTEGER NOT NULL,
+			manual_mask          TEXT,
+			created_at           INTEGER NOT NULL,
+			updated_at           INTEGER NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS board_photo_overlays (
+			asset_id      TEXT NOT NULL REFERENCES board_photo_assets(id) ON DELETE CASCADE,
+			side          TEXT NOT NULL CHECK (side IN ('top','bottom')),
+			source_path   TEXT NOT NULL,
+			source_mime   TEXT NOT NULL DEFAULT '',
+			source_size   INTEGER NOT NULL DEFAULT 0,
+			render_path   TEXT NOT NULL DEFAULT '',
+			render_width  INTEGER NOT NULL DEFAULT 0,
+			render_height INTEGER NOT NULL DEFAULT 0,
+			calibration   TEXT,
+			created_at    INTEGER NOT NULL,
+			updated_at    INTEGER NOT NULL,
+			PRIMARY KEY (asset_id, side)
+		)`,
+	}
+
+	for _, stmt := range stmts {
+		if _, err := tx.Exec(stmt); err != nil {
+			return fmt.Errorf("exec %q: %w", stmt[:40], err)
+		}
+	}
+
+	if _, err := tx.Exec(`DELETE FROM schema_version`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`INSERT INTO schema_version (version) VALUES (?)`, 12); err != nil {
+		return err
+	}
+
 	return tx.Commit()
 }
 

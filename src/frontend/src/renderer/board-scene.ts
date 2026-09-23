@@ -387,6 +387,9 @@ export interface PinFontSizeGroup {
 export interface BoardSceneGraph {
   root:        Container;
   outlineGfx:  Graphics;
+  /** Photo overlays sit directly above the board fill and below copper. */
+  photoOverlayTop: Container;
+  photoOverlayBottom: Container;
   topLayer:    Container;
   bottomLayer: Container;
   /** Sub-layer containers for granular visibility control */
@@ -784,6 +787,10 @@ export function buildBoardScene(
   // `selection.partIndex` stays stable — skip them below.
   const root        = new Container();
   const outlineGfx  = new Graphics();
+  const photoOverlayTop = new Container();
+  const photoOverlayBottom = new Container();
+  photoOverlayTop.label = 'photo-overlay-top';
+  photoOverlayBottom.label = 'photo-overlay-bottom';
   const bottomLayer = new Container();
   const topLayer    = new Container();
 
@@ -861,6 +868,10 @@ export function buildBoardScene(
   root.sortableChildren = true;
 
   root.addChild(outlineGfx);
+  // Keep these containers immediately after the board fill. BoardRenderer
+  // inserts the Pixi meshes here; their children are moved with the bottom
+  // side into butterflyRoot when Butterfly mode is active.
+  root.addChild(photoOverlayTop, photoOverlayBottom);
   tick('init + outlineGfx attach');
 
   const isMultiLayer = !!board.layerNames && board.layerNames.length > 0;
@@ -2356,5 +2367,5 @@ export function buildBoardScene(
 
   tick('fontSizeGroups + vias + tail');
 
-  return { root, outlineGfx, topLayer, bottomLayer, topFillLayer, bottomFillLayer, topPinLayer, bottomPinLayer, topOutlineLayer, bottomOutlineLayer, topLabelLayer, bottomLabelLayer, labels, topLabels, bottomLabels, topDiodeLabels, bottomDiodeLabels, topPinLabels, bottomPinLabels, pinLabelsByPartIndex, borderBatches, fontSizeGroups, topPinGfx, bottomPinGfx, topCircleLabelLayer, bottomCircleLabelLayer, topTwoPinNetLayer, bottomTwoPinNetLayer, circleFontSizeGroups, twoPinFontSizeGroups, partLabelByIndex, pinRadiusClamp, twoPinPadPolys, traceLayer, traceLayerContainers, surfacesLayer, surfacesLayerContainers, silkscreenLayer, silkscreenTop, silkscreenBottom, padsTop, padsBottom, copperDropsTop, copperDropsBottom, viaLayer, viaLabels, viaConnectedLayers, labelModel };
+  return { root, outlineGfx, photoOverlayTop, photoOverlayBottom, topLayer, bottomLayer, topFillLayer, bottomFillLayer, topPinLayer, bottomPinLayer, topOutlineLayer, bottomOutlineLayer, topLabelLayer, bottomLabelLayer, labels, topLabels, bottomLabels, topDiodeLabels, bottomDiodeLabels, topPinLabels, bottomPinLabels, pinLabelsByPartIndex, borderBatches, fontSizeGroups, topPinGfx, bottomPinGfx, topCircleLabelLayer, bottomCircleLabelLayer, topTwoPinNetLayer, bottomTwoPinNetLayer, circleFontSizeGroups, twoPinFontSizeGroups, partLabelByIndex, pinRadiusClamp, twoPinPadPolys, traceLayer, traceLayerContainers, surfacesLayer, surfacesLayerContainers, silkscreenLayer, silkscreenTop, silkscreenBottom, padsTop, padsBottom, copperDropsTop, copperDropsBottom, viaLayer, viaLabels, viaConnectedLayers, labelModel };
 }

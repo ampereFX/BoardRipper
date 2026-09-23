@@ -48,6 +48,13 @@ import { fileInputRefs } from '../store/file-inputs';
 import { obdNetIndex, obdBoardNumberFor, obdStore } from '../store/obd-store';
 import { primaryDiodeReading, boardHasDiodeData, formatDiode } from '../store/diode-readings';
 import { stepExpApproach, ZOOM_TWEEN_RATE } from './smooth-zoom';
+import { boardLifecycleController } from '../photo-overlay/board-lifecycle-controller';
+import { photoOverlayStore } from '../photo-overlay/overlay-store';
+import { loadOverlayDisplayPreferences } from '../photo-overlay/view-preferences';
+import type { OverlaySide } from '../photo-overlay/types';
+import { solveHomography } from '../photo-overlay/homography';
+import { boardMaskToRawCoordinates, resolveBoardMaskPolygon } from './photo-overlay-mask';
+import { buildOverlayMeshData, createOverlayMesh, type OverlayMeshResources } from './photo-overlay-mesh';
 
 // Alias for local use — all colour references go through board-scene.ts
 const COLORS = BOARD_COLORS;
@@ -168,6 +175,8 @@ function pointInConvexPoly(px: number, py: number, poly: [number, number][]): bo
 interface BoardScene {
   root: Container;
   outlineGfx: Graphics;
+  photoOverlayTop: Container;
+  photoOverlayBottom: Container;
   topLayer: Container;
   bottomLayer: Container;
   topFillLayer: Container;
@@ -242,6 +251,17 @@ interface BoardScene {
    *  Consumed by the LabelOverlay draw path; the BitmapText layers stay empty
    *  for those label sites in that mode. */
   labelModel: LabelModel | null;
+}
+
+interface PhotoOverlayRuntime {
+  side: OverlaySide;
+  boardKey: string;
+  signature: string;
+  image: ImageBitmap;
+  resources: OverlayMeshResources;
+  mask: Graphics;
+  visible: boolean;
+  opacity: number;
 }
 
 /** Saved viewport transform for restoring on tab switch */
@@ -407,6 +427,7 @@ export class BoardRenderer {
   private board: BoardData | null = null;
   private unsubscribeBoard: (() => void) | null = null;
   private unsubscribeSettings: (() => void) | null = null;
+  private unsubscribePhotoOverlay: (() => void) | null = null;
   private unsubscribeResizeMode: (() => void) | null = null;
   private unsubscribeTheme: (() => void) | null = null;
   private unsubscribeViewCommands: (() => void) | null = null;
@@ -736,6 +757,11 @@ export class BoardRenderer {
    *  context + scene graph so K open tabs don't hold K live WebGL contexts. */
   private _deepPauseTimer: ReturnType<typeof setTimeout> | null = null;
 
+  /** Pixi mesh + board-space mask for the active board's top/bottom photos. */
+  private photoOverlayRuntimes = new Map<OverlaySide, PhotoOverlayRuntime>();
+  private photoOverlayKey: string | null = null;
+  private photoOverlayPrefsNextRefresh = 0;
+
   // Cached label counts for perf overlay — updated by applyLabelVisibility, not by iterating every 500ms
   private labelCounts = { partVis: 0, partTotal: 0, pinVis: 0, pinTotal: 0 };
 
@@ -832,6 +858,15 @@ export class BoardRenderer {
   private onTick = (ticker: import('pixi.js').Ticker) => {
     const perf = this.perfVisible;
     const frameStart = perf ? performance.now() : 0;
+
+    // Preferences have a small IndexedDB helper but no separate UI emitter.
+    // Refresh only while an overlay is mounted so visibility/opacity changes
+    // become live without rebuilding the mesh or scene.
+    const now = performance.now();
+    if (this.photoOverlayRuntimes.size > 0 && now >= this.photoOverlayPrefsNextRefresh) {
+      this.photoOverlayPrefsNextRefresh = now + 500;
+      this.refreshPhotoOverlayPreferences();
+    }
 
     // Wheel-zoom tween (exponential, cursor-anchored) — see smooth-zoom.ts.
     if (this.zoomTween) {
@@ -1175,6 +1210,7 @@ export class BoardRenderer {
     }
     // Sync with current store state
     this.onBoardUpdate();
+    this.syncPhotoOverlays();
 
     // D1: a settings/theme change arrived while this tab was inactive — run
     // the single deferred rebuild now that the tab is visible again.
@@ -1249,6 +1285,13 @@ export class BoardRenderer {
     this.hdrOverlay?.destroy();
     this.hdrOverlay = null;
     this.teardownForReinit();
+    const keep = new Set<string>();
+    const activeTab = boardStore.activeTabId;
+    if (activeTab != null) {
+      const activeKey = boardLifecycleController.getSubboardKey(activeTab, 'active');
+      if (activeKey) keep.add(activeKey);
+    }
+    boardLifecycleController.releaseCpuRenderImages(keep);
     // teardownForReinit() releases the context but leaves contextLost=false;
     // set it so resume() routes through reinitApp() instead of touching the
     // now-dead Application.
@@ -1865,6 +1908,13 @@ export class BoardRenderer {
 
     this.unsubscribeBoard = boardStore.subscribe(() => this.onBoardUpdate());
     this.unsubscribeSettings = renderSettingsStore.subscribe(() => this.onSettingsUpdate());
+    this.unsubscribePhotoOverlay = photoOverlayStore.subscribe(() => {
+      if (this.destroyed || this.contextLost || this.reinitializing) return;
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+      if (this.tabId !== null && boardStore.activeTabId !== this.tabId) return;
+      this.syncPhotoOverlays();
+      this.needsRender = true;
+    });
     // Toggling Resize Mode changes whether the label overlay records hit-test
     // boxes; force one overlay redraw so boxes are ready on the first click.
     this.unsubscribeResizeMode = resizeModeStore.subscribe(() => {
@@ -2632,7 +2682,9 @@ export class BoardRenderer {
 
     // Move bottomLayer from root into butterfly root
     scene.root.removeChild(scene.bottomLayer);
+    scene.root.removeChild(scene.photoOverlayBottom);
     broot.addChild(scene.bottomLayer);
+    broot.addChildAt(scene.photoOverlayBottom, 1);
 
     scene.butterflyRoot = broot;
     scene.butterflyOutline = boutline;
@@ -2662,6 +2714,8 @@ export class BoardRenderer {
     // be the last child of scene.root so it renders above pins and borders.
     scene.butterflyRoot.removeChild(scene.bottomLayer);
     scene.root.addChild(scene.bottomLayer);
+    scene.butterflyRoot.removeChild(scene.photoOverlayBottom);
+    scene.root.addChildAt(scene.photoOverlayBottom, scene.root.getChildIndex(scene.photoOverlayTop) + 1);
     scene.root.addChild(this.netDimGfx);
     scene.root.addChild(this.crossSideGhostGfx);
     scene.root.addChild(this.netLabelLayer);
@@ -2852,6 +2906,181 @@ export class BoardRenderer {
     }
   }
 
+  private multiplyOverlayMatrices(left: number[], right: number[]): number[] {
+    const result = new Array<number>(9).fill(0);
+    for (let row = 0; row < 3; row++) {
+      for (let column = 0; column < 3; column++) {
+        for (let index = 0; index < 3; index++) {
+          result[row * 3 + column] += left[row * 3 + index] * right[index * 3 + column];
+        }
+      }
+    }
+    return result;
+  }
+
+  /** Converts the normalized calibration matrix to raw board coordinates. */
+  private overlayMatrixForBoard(matrix: number[], board: BoardData): number[] {
+    const width = board.bounds.maxX - board.bounds.minX;
+    const height = board.bounds.maxY - board.bounds.minY;
+    const normalizeBoard = [
+      1 / width, 0, -board.bounds.minX / width,
+      0, 1 / height, -board.bounds.minY / height,
+      0, 0, 1,
+    ];
+    return this.multiplyOverlayMatrices(matrix, normalizeBoard);
+  }
+
+  private overlayMaskPoints(board: BoardData, mask: ReturnType<typeof resolveBoardMaskPolygon>): Point[] {
+    return boardMaskToRawCoordinates(mask, board.bounds);
+  }
+
+  private createOverlayMask(points: Point[]): Graphics {
+    if (points.length < 3) throw new RangeError('Die Foto-Maske braucht mindestens 3 Punkte.');
+    const mask = new Graphics();
+    mask.eventMode = 'none';
+    mask.moveTo(points[0].x, points[0].y);
+    for (let index = 1; index < points.length; index++) {
+      mask.lineTo(points[index].x, points[index].y);
+    }
+    mask.closePath();
+    mask.fill({ color: 0xffffff });
+    // Pixi's stencil-mask pipe temporarily includes this Graphics in the
+    // render build to draw the stencil shape. Keep it renderable so Pixi's
+    // display-status gate does not skip the mask and clip the whole mesh.
+    return mask;
+  }
+
+  private disposePhotoOverlayRuntime(runtime: PhotoOverlayRuntime): void {
+    runtime.resources.mesh.mask = null;
+    runtime.resources.mesh.parent?.removeChild(runtime.resources.mesh);
+    runtime.mask.parent?.removeChild(runtime.mask);
+    runtime.resources.dispose();
+    if (!runtime.mask.destroyed) runtime.mask.destroy();
+  }
+
+  private clearPhotoOverlayRuntimes(): void {
+    for (const runtime of this.photoOverlayRuntimes.values()) {
+      this.disposePhotoOverlayRuntime(runtime);
+    }
+    this.photoOverlayRuntimes.clear();
+    this.photoOverlayKey = null;
+  }
+
+  private applyPhotoOverlayVisibility(): void {
+    for (const runtime of this.photoOverlayRuntimes.values()) {
+      runtime.resources.mesh.visible = runtime.visible
+        && (boardStore.butterfly || (runtime.side === 'top' ? boardStore.showTop : boardStore.showBottom));
+      runtime.resources.mesh.alpha = runtime.opacity;
+    }
+    if (this.photoOverlayRuntimes.size > 0) this.needsRender = true;
+  }
+
+  private refreshPhotoOverlayPreferences(): void {
+    const key = this.photoOverlayKey;
+    if (!key) return;
+    for (const runtime of this.photoOverlayRuntimes.values()) {
+      void loadOverlayDisplayPreferences(key, runtime.side).then((prefs) => {
+        if (this.destroyed || this.photoOverlayRuntimes.get(runtime.side) !== runtime) return;
+        runtime.visible = prefs.visible;
+        runtime.opacity = prefs.opacity;
+        this.applyPhotoOverlayVisibility();
+      });
+    }
+  }
+
+  /** Synchronizes store-owned photo bitmaps with the active Pixi scene. */
+  private syncPhotoOverlays(boardOverride?: BoardData): void {
+    const board = boardOverride ?? this.board;
+    if (!this.activeScene || !board || this.tabId === null) {
+      this.clearPhotoOverlayRuntimes();
+      return;
+    }
+    const key = boardLifecycleController.getSubboardKey(this.tabId, 'active');
+    if (!key) {
+      this.clearPhotoOverlayRuntimes();
+      return;
+    }
+    const state = photoOverlayStore.getBoardState(key);
+    this.photoOverlayKey = key;
+    const diagonal = Math.hypot(
+      board.bounds.maxX - board.bounds.minX,
+      board.bounds.maxY - board.bounds.minY,
+    );
+
+    for (const side of ['top', 'bottom'] as const) {
+      const sideState = state.sides[side];
+      const bitmap = sideState.renderImage;
+      if (!sideState.metadata || !sideState.calibration || !bitmap) {
+        if (sideState.metadata && sideState.calibration && sideState.renderImageStatus === 'idle') {
+          void photoOverlayStore.loadRenderImage(key, side).then(() => this.syncPhotoOverlays());
+        }
+        const old = this.photoOverlayRuntimes.get(side);
+        if (old) {
+          this.disposePhotoOverlayRuntime(old);
+          this.photoOverlayRuntimes.delete(side);
+        }
+        continue;
+      }
+
+      let matrix: number[];
+      let maskPoints: Point[];
+      try {
+        const homography = solveHomography(sideState.calibration.points, diagonal);
+        if (!homography.matrix) throw new Error(homography.error ?? 'Die Foto-Homografie konnte nicht berechnet werden.');
+        matrix = homography.matrix;
+        const mask = resolveBoardMaskPolygon(board.outline, state.mask);
+        maskPoints = this.overlayMaskPoints(board, mask);
+      } catch (error) {
+        const old = this.photoOverlayRuntimes.get(side);
+        if (old) {
+          this.disposePhotoOverlayRuntime(old);
+          this.photoOverlayRuntimes.delete(side);
+        }
+        log.render.warn(`Foto-Overlay ${side} nicht renderbar:`, error);
+        continue;
+      }
+
+      const signature = `${key}|${sideState.metadata.id}|${JSON.stringify(sideState.calibration)}|${JSON.stringify(maskPoints)}`;
+      const old = this.photoOverlayRuntimes.get(side);
+      if (old && old.boardKey === key && old.signature === signature && old.image === bitmap) continue;
+      if (old) this.disposePhotoOverlayRuntime(old);
+
+      let resources: OverlayMeshResources | null = null;
+      let mask: Graphics | null = null;
+      try {
+        const data = buildOverlayMeshData(this.overlayMatrixForBoard(matrix, board), board.bounds);
+        resources = createOverlayMesh(bitmap, data);
+        mask = this.createOverlayMask(maskPoints);
+        const layer = side === 'top' ? this.activeScene.photoOverlayTop : this.activeScene.photoOverlayBottom;
+        layer.addChild(mask, resources.mesh);
+        resources.mesh.mask = mask;
+        resources.mesh.eventMode = 'none';
+        const runtime: PhotoOverlayRuntime = {
+          side,
+          boardKey: key,
+          signature,
+          image: bitmap,
+          resources,
+          mask,
+          visible: true,
+          opacity: 0.5,
+        };
+        this.photoOverlayRuntimes.set(side, runtime);
+        void loadOverlayDisplayPreferences(key, side).then((prefs) => {
+          if (this.destroyed || this.photoOverlayRuntimes.get(side) !== runtime) return;
+          runtime.visible = prefs.visible;
+          runtime.opacity = prefs.opacity;
+          this.applyPhotoOverlayVisibility();
+        });
+      } catch (error) {
+        if (mask) mask.destroy();
+        resources?.dispose();
+        log.render.warn(`Foto-Overlay ${side} konnte nicht aufgebaut werden:`, error);
+      }
+    }
+    this.applyPhotoOverlayVisibility();
+  }
+
   private activateScene(board: BoardData, skipSaveViewport = false) {
     const scene = this.getOrBuildScene(board);
     log.render.log(`activateScene tab=${this.tabId} ${board.format}/${board.parts.length}pts cached=${this.activeScene === scene} ticker=${this.app.ticker.started}`);
@@ -2863,6 +3092,7 @@ export class BoardRenderer {
       scene.bottomLayer.visible = this.isBottomVisible;
       this.applyLayerVisibility(scene);
       this.applyFlips(board, scene);
+      this.syncPhotoOverlays();
       this.needsRender = true;
       this.overlayDirty = true;   // flips changed the label-layer transforms
       this.overlayContentDirty = true;
@@ -2881,6 +3111,11 @@ export class BoardRenderer {
     // below would restore 100% zoom and the board renders blank (content
     // off-screen). skipSaveViewport preserves the teardown-saved state.
     if (!skipSaveViewport) this.saveViewportState();
+
+    // Overlay meshes belong to the scene they were built for. Dispose them
+    // before detaching the old scene so a new scene cannot accidentally reuse
+    // a mesh still parented to the old scene's overlay layer.
+    this.clearPhotoOverlayRuntimes();
 
     // Detach old scene (netDimGfx + selectionGfx + elevated labels live inside root)
     if (this.activeScene) {
@@ -2971,6 +3206,7 @@ export class BoardRenderer {
     scene.bottomLayer.visible = this.isBottomVisible;
     this.applyLayerVisibility(scene);
     this.applyFlips(board, scene);
+    this.syncPhotoOverlays(board);
 
     // Restore viewport position or fit
     this.restoreViewportState(board);
@@ -3030,6 +3266,7 @@ export class BoardRenderer {
   }
 
   private invalidateAllScenes() {
+    this.clearPhotoOverlayRuntimes();
     // Detach all overlay objects from active scene before destroying — these
     // objects are persistent (reused across rebuilds) and must not be destroyed
     // when scene.root.destroy({ children: true }) is called below.
@@ -3059,6 +3296,7 @@ export class BoardRenderer {
         this.activeScene.butterflyRoot.removeChild(this.butterflyDimGfx);
         // Move bottomLayer back before destroying
         this.activeScene.butterflyRoot.removeChild(this.activeScene.bottomLayer);
+        this.activeScene.butterflyRoot.removeChild(this.activeScene.photoOverlayBottom);
         this.viewport.removeChild(this.activeScene.butterflyRoot);
       }
       this.butterflySelectionGfx.clear();
@@ -3068,6 +3306,7 @@ export class BoardRenderer {
     for (const [, scene] of this.sceneCache) {
       if (scene.butterflyRoot) {
         scene.butterflyRoot.removeChild(scene.bottomLayer);
+        scene.butterflyRoot.removeChild(scene.photoOverlayBottom);
         scene.butterflyRoot.destroy({ children: true });
         scene.butterflyRoot = null;
       }
@@ -3203,6 +3442,7 @@ export class BoardRenderer {
         this.activeScene.bottomLayer.visible = this.isBottomVisible;
         this.applyLayerVisibility(this.activeScene);
         this.applyFlips(board, this.activeScene);
+        this.applyPhotoOverlayVisibility();
         this.needsRender = true;
         // Rotation, side flip (top↔bottom), mirror, and flip-axis all change
         // the world transform of every pin (scene.root scale/rotation), so the
@@ -6861,6 +7101,7 @@ export class BoardRenderer {
     if (this.followDebounceTimer) { clearTimeout(this.followDebounceTimer); this.followDebounceTimer = null; }
     this.unsubscribeBoard?.();
     this.unsubscribeSettings?.();
+    this.unsubscribePhotoOverlay?.();
     this.unsubscribeResizeMode?.();
     this.unsubscribeTheme?.();
     this.unsubscribeObd?.();
