@@ -23,6 +23,9 @@ import { renderSettingsStore, computePinRadius, resolvePinColor, computePartRend
 import { themeStore, hexToInt } from '../store/themes';
 import { looksLikeMouseWheel } from '../store/scroll-mode';
 import { contextMenuStore } from '../store/context-menu-store';
+import { markerStore } from '../markers/marker-store';
+import type { Marker, MarkerSide } from '../markers/marker-store';
+import { relativeToBoardPoint } from '../markers/board-identity';
 import { resizeModeStore } from '../store/resize-mode-store';
 import { boardAntialias, boardMaxFps, boardPixelRatio } from '../device-profile';
 import { rotationLockStore } from '../store/rotation-lock-store';
@@ -33,7 +36,11 @@ import { partCompareStore } from '../store/part-compare-store';
 import type { PinDiffStatus } from '../store/part-compare';
 import { worklistStore, MARK_COLOR_HEX, MEAS_KINDS, type NetMeasurement } from '../store/worklist-store';
 import { PART_MARK_SVG, NET_MARK_SVG, WATER_SVG, SURGE_SVG, MEAS_SVG, MEAS_LETTER, escapeHtml } from './worklist-tooltip-icons';
-import { openBoardSidebarTab } from '../panels/board-viewer-bridge';
+import {
+  openBoardSidebarTab,
+  openMarkerPanel,
+  registerBoardMarkerNavigationHandler,
+} from '../panels/board-viewer-bridge';
 import { buildBoardScene, drawOutline, drawOutlineDebug, updateBorderWidths, BOARD_COLORS, drawPadShape, drawPinShape } from './board-scene';
 import { LabelOverlay } from './label-overlay';
 import { focusHaloGeometry } from './focus-halo';
@@ -73,6 +80,7 @@ import { fileInputRefs } from '../store/file-inputs';
 import { obdNetIndex, obdBoardNumberFor, obdStore } from '../store/obd-store';
 import { primaryDiodeReading, boardHasDiodeData, formatDiode } from '../store/diode-readings';
 import { stepExpApproach, ZOOM_TWEEN_RATE } from './smooth-zoom';
+import { clusterMarkerPoints, markerAtScreenPoint as findMarkerAtScreenPoint, physicalSideForMarker, type MarkerScreenPoint } from './marker-rendering';
 
 // Alias for local use — all colour references go through board-scene.ts
 const COLORS = BOARD_COLORS;
@@ -193,6 +201,12 @@ function pointInConvexPoly(px: number, py: number, poly: [number, number][]): bo
 interface BoardScene {
   root: Container;
   outlineGfx: Graphics;
+  markerRootTop: Container;
+  markerRootBottom: Container;
+  markerGraphicsTop: Graphics;
+  markerGraphicsBottom: Graphics;
+  markerCountLayerTop: Container;
+  markerCountLayerBottom: Container;
   topLayer: Container;
   bottomLayer: Container;
   topFillLayer: Container;
@@ -447,6 +461,7 @@ export class BoardRenderer {
   private debugVertexPositions: Array<{x: number; y: number}> = [];
   private board: BoardData | null = null;
   private unsubscribeBoard: (() => void) | null = null;
+  private unsubscribeMarkers: (() => void) | null = null;
   private unsubscribeSettings: (() => void) | null = null;
   private unsubscribeResizeMode: (() => void) | null = null;
   private unsubscribeTheme: (() => void) | null = null;
@@ -661,6 +676,7 @@ export class BoardRenderer {
    *  overlay so it need not appear here. */
   private litPartIndices: Set<number> | null = null;
   private initialized = false;
+  private unregisterMarkerNavigation: (() => void) | null = null;
   private boundContextMenu: ((e: MouseEvent) => void) | null = null;
   private boundDblClick: ((e: MouseEvent) => void) | null = null;
   /** Touch long-press → context menu. iOS Safari never fires `contextmenu`
@@ -935,6 +951,10 @@ export class BoardRenderer {
    *  context + scene graph so K open tabs don't hold K live WebGL contexts. */
   private _deepPauseTimer: ReturnType<typeof setTimeout> | null = null;
 
+  private markerEntries: Array<{ marker: Marker; bounds: BoardData['bounds']; subboardIndex: number | null }> = [];
+  private markerRefreshVersion = 0;
+  private lastMarkerViewKey = '';
+  private tooltipMarkerSpan: HTMLSpanElement | null = null;
   // Cached label counts for perf overlay — updated by applyLabelVisibility, not by iterating every 500ms
   private labelCounts = { partVis: 0, partTotal: 0, pinVis: 0, pinTotal: 0 };
 
@@ -1034,6 +1054,8 @@ export class BoardRenderer {
     const perf = this.perfVisible;
     const frameStart = perf ? performance.now() : 0;
 
+    const markerViewKey = `${this.viewport.x}|${this.viewport.y}|${this.viewport.scale.x}|${this.viewport.scale.y}|${this.viewport.screenWidth}|${this.viewport.screenHeight}`;
+    if (markerViewKey !== this.lastMarkerViewKey) this.drawPositionMarkers();
     // Wheel-zoom tween (exponential, cursor-anchored) — see smooth-zoom.ts.
     if (this.zoomTween) {
       const t = this.zoomTween;
@@ -2193,7 +2215,14 @@ export class BoardRenderer {
     this.tooltipWorklistNetSpan = document.createElement('span');
     this.tooltipWorklistNetSpan.className = 'pnt-worklist-net';
     this.tooltipWorklistNetSpan.style.display = 'none';
-    this.tooltipEl.append(this.tooltipNetSpan, this.tooltipDetailSpan, this.tooltipCompareSpan, this.tooltipWorklistSpan, this.tooltipMetaSpan, this.tooltipWorklistNetSpan, this.tooltipObdSpan);
+    this.tooltipMarkerSpan = document.createElement('span');
+    this.tooltipMarkerSpan.className = 'pnt-marker-note';
+    this.tooltipMarkerSpan.style.display = 'none';
+    this.tooltipMarkerSpan.style.whiteSpace = 'pre-wrap';
+    this.tooltipMarkerSpan.style.maxWidth = '320px';
+    this.tooltipMarkerSpan.style.maxHeight = '160px';
+    this.tooltipMarkerSpan.style.overflow = 'hidden';
+    this.tooltipEl.append(this.tooltipNetSpan, this.tooltipDetailSpan, this.tooltipMarkerSpan, this.tooltipCompareSpan, this.tooltipWorklistSpan, this.tooltipMetaSpan, this.tooltipWorklistNetSpan, this.tooltipObdSpan);
     this.containerEl.appendChild(this.tooltipEl);
     this.tooltipCanvas = this.app.renderer.canvas as HTMLCanvasElement;
     // Coalesce to one handleHover() per animation frame — pointermove can fire
@@ -2383,6 +2412,11 @@ export class BoardRenderer {
     this.containerEl.addEventListener('gestureend', this.boundGestureEnd, { passive: false });
 
     this.unsubscribeBoard = boardStore.subscribe(() => this.onBoardUpdate());
+    this.unsubscribeMarkers = markerStore.subscribe(() => {
+      this.refreshPositionMarkers();
+      this.needsRender = true;
+    });
+    void markerStore.hydrate();
     this.unsubscribeSettings = renderSettingsStore.subscribe(() => this.onSettingsUpdate());
     // Toggling Resize Mode changes whether the label overlay records hit-test
     // boxes; force one overlay redraw so boxes are ready on the first click.
@@ -2505,6 +2539,11 @@ export class BoardRenderer {
 
     // Pick up any board data that loaded during async init
     this.onBoardUpdate();
+    if (this.tabId != null) {
+      this.unregisterMarkerNavigation = registerBoardMarkerNavigationHandler(this.tabId, markerId => {
+        this.navigateToMarker(markerId);
+      });
+    }
     const tabLabel = this.tabId !== null ? ` (tab ${this.tabId})` : '';
     log.render.log(`Initialized${tabLabel}: ${this.containerEl.clientWidth}×${this.containerEl.clientHeight}`);
     } catch (err) {
@@ -3215,6 +3254,7 @@ export class BoardRenderer {
         this.lastFlipParams = { butterfly: false, topRot: labelRot, topSx: lsx, topSy: lsy, botRot: 0, botSx: 1, botSy: 1 };
       }
     }
+    this.drawPositionMarkers();
   }
 
   /** Set up butterfly mode: move bottom layer into its own root */
@@ -3370,6 +3410,24 @@ export class BoardRenderer {
         (pin) => primaryDiodeReading(pin, diodeBn),
         boardStore.rotation,
       );
+      const markerGraphicsTop = new Graphics();
+      const markerGraphicsBottom = new Graphics();
+      const markerCountLayerTop = new Container();
+      const markerCountLayerBottom = new Container();
+      const markerRootTop = new Container();
+      const markerRootBottom = new Container();
+      markerGraphicsTop.eventMode = 'none';
+      markerGraphicsBottom.eventMode = 'none';
+      markerRootTop.eventMode = 'none';
+      markerRootBottom.eventMode = 'none';
+      markerGraphicsTop.zIndex = 1;
+      markerCountLayerTop.zIndex = 2;
+      markerGraphicsBottom.zIndex = 1;
+      markerCountLayerBottom.zIndex = 2;
+      markerRootTop.sortableChildren = true;
+      markerRootBottom.sortableChildren = true;
+      markerRootTop.addChild(markerGraphicsTop, markerCountLayerTop);
+      markerRootBottom.addChild(markerGraphicsBottom, markerCountLayerBottom);
       // Remember which rotation parity the labels were laid out for — a change
       // (0/180 ↔ 90/270) transposes the screen axes and needs a rebuild so the
       // pin-label stagger follows (see onBoardUpdate's rotated branch).
@@ -3411,7 +3469,7 @@ export class BoardRenderer {
         }
       }
 
-      return { ...graph, butterflyRoot: null, butterflyOutline: null };
+      return { ...graph, markerRootTop, markerRootBottom, markerGraphicsTop, markerGraphicsBottom, markerCountLayerTop, markerCountLayerBottom, butterflyRoot: null, butterflyOutline: null };
     } catch (err) {
       log.render.error('buildBoardScene failed — evicting cache entry so re-open will re-parse:', err);
       // Evict the cache entry so the user can re-open the file to get a fresh parse.
@@ -3479,10 +3537,13 @@ export class BoardRenderer {
     if (this.activeScene === scene) {
       // Same scene — just update layer visibility + flips
       log.render.log('activateScene: same scene, updating flips');
+      this.app.stage.addChild(scene.markerRootTop, scene.markerRootBottom);
       scene.topLayer.visible = this.isTopVisible;
       scene.bottomLayer.visible = this.isBottomVisible;
       this.applyLayerVisibility(scene);
       this.applyFlips(board, scene);
+      this.refreshPositionMarkers();
+      this.drawPositionMarkers();
       this.needsRender = true;
       this.overlayDirty = true;   // flips changed the label-layer transforms
       this.overlayContentDirty = true;
@@ -3519,6 +3580,8 @@ export class BoardRenderer {
       if (this.activeScene.butterflyRoot) {
         this.viewport.removeChild(this.activeScene.butterflyRoot);
       }
+      this.app.stage.removeChild(this.activeScene.markerRootTop);
+      this.app.stage.removeChild(this.activeScene.markerRootBottom);
     }
 
     // Attach new scene + overlay objects inside root (so board flips apply to them too).
@@ -3588,11 +3651,14 @@ export class BoardRenderer {
     this.viewport.addChild(this.netLinesGfx);
     this.viewport.removeChild(this.selectionLabelLayer);
     this.viewport.addChild(this.selectionLabelLayer);
+    this.app.stage.addChild(scene.markerRootTop);
+    this.app.stage.addChild(scene.markerRootBottom);
 
     scene.topLayer.visible = this.isTopVisible;
     scene.bottomLayer.visible = this.isBottomVisible;
     this.applyLayerVisibility(scene);
     this.applyFlips(board, scene);
+    this.refreshPositionMarkers();
 
     // Restore viewport position or fit
     this.restoreViewportState(board);
@@ -3644,6 +3710,8 @@ export class BoardRenderer {
       this.activeScene.root.removeChild(this.elevatedPinBg!);
       this.activeScene.root.removeChild(this.elevatedPinLabel!);
       this.viewport.removeChild(this.activeScene.root);
+      this.app.stage.removeChild(this.activeScene.markerRootTop);
+      this.app.stage.removeChild(this.activeScene.markerRootBottom);
       this.activeScene = null;
     }
     this.netDimGfx.clear();
@@ -3680,6 +3748,8 @@ export class BoardRenderer {
       this.activeScene.root.removeChild(this.elevatedPinBg!);
       this.activeScene.root.removeChild(this.elevatedPinLabel!);
       this.viewport.removeChild(this.activeScene.root);
+      this.app.stage.removeChild(this.activeScene.markerRootTop);
+      this.app.stage.removeChild(this.activeScene.markerRootBottom);
       if (this.activeScene.butterflyRoot) {
         // Both persistent butterfly overlays live in butterflyRoot; detach both
         // or destroy({children:true}) below kills them and the next rebuild
@@ -3696,6 +3766,8 @@ export class BoardRenderer {
     }
 
     for (const [, scene] of this.sceneCache) {
+      scene.markerRootTop.destroy({ children: true });
+      scene.markerRootBottom.destroy({ children: true });
       if (scene.butterflyRoot) {
         scene.butterflyRoot.removeChild(scene.bottomLayer);
         scene.butterflyRoot.destroy({ children: true });
@@ -7148,11 +7220,10 @@ export class BoardRenderer {
   }
 
   /** Find the trace segment closest to a world-space point, respecting layer visibility */
-  private traceHitTest(world: Point): { traceIndex: number; net: string } | null {
+  private traceHitTest(world: Point): { traceIndex: number; net: string; side: MarkerSide; point: Point } | null {
     if (!this.board?.traces || !boardStore.showTraces || this.copperHidden) return null;
 
     const { layerStates } = boardStore;
-    const local = this.worldToScene(world, this.activeScene?.root);
     // Threshold: half trace width + a generous pointer tolerance scaled by zoom
     const zoomScale = Math.abs(this.viewport.scale.x);
     const pointerTol = 8 / zoomScale; // 8 CSS px converted to scene units
@@ -7164,45 +7235,44 @@ export class BoardRenderer {
       grid = buildTraceGrid(this.board.traces, cellSize);
       this.traceGridCache.set(this.board, grid);
     }
-    const candidates = queryTraceGrid(grid, local.x, local.y, pointerTol);
-
+    const roots = boardStore.butterfly && this.activeScene?.butterflyRoot
+      ? [
+          { root: this.activeScene.root, side: 'top' as const },
+          { root: this.activeScene.butterflyRoot, side: 'bottom' as const },
+        ]
+      : [{ root: this.activeScene?.root, side: this.visibleMarkerSide() }];
+    let best: { traceIndex: number; net: string; side: MarkerSide; point: Point } | null = null;
     let bestDist = Infinity;
-    let bestIdx = -1;
 
-    for (const i of candidates) {
-      const t = this.board.traces[i];
-      // Skip traces on hidden layers
-      if (t.layer != null && t.layer < layerStates.length && !layerStates[t.layer].visible) continue;
-
-      const halfW = (t.width || 1) / 2;
-      const threshold = halfW + pointerTol;
-
-      // Point-to-line-segment distance
-      const ax = t.start.x, ay = t.start.y;
-      const bx = t.end.x, by = t.end.y;
-      const abx = bx - ax, aby = by - ay;
-      const len2 = abx * abx + aby * aby;
-      let dist: number;
-      if (len2 < 0.001) {
-        // Degenerate segment (zero length)
-        const dx = local.x - ax, dy = local.y - ay;
-        dist = Math.sqrt(dx * dx + dy * dy);
-      } else {
-        const t0 = Math.max(0, Math.min(1, ((local.x - ax) * abx + (local.y - ay) * aby) / len2));
-        const px = ax + t0 * abx, py = ay + t0 * aby;
-        const dx = local.x - px, dy = local.y - py;
-        dist = Math.sqrt(dx * dx + dy * dy);
-      }
-      if (dist < threshold && dist < bestDist) {
-        bestDist = dist;
-        bestIdx = i;
+    for (const { root, side } of roots) {
+      const local = this.worldToScene(world, root);
+      const candidates = queryTraceGrid(grid, local.x, local.y, pointerTol);
+      for (const i of candidates) {
+        const t = this.board.traces[i];
+        if (t.layer != null && t.layer < layerStates.length && !layerStates[t.layer].visible) continue;
+        const halfW = (t.width || 1) / 2;
+        const threshold = halfW + pointerTol;
+        const ax = t.start.x, ay = t.start.y;
+        const bx = t.end.x, by = t.end.y;
+        const abx = bx - ax, aby = by - ay;
+        const len2 = abx * abx + aby * aby;
+        let dist: number;
+        if (len2 < 0.001) {
+          const dx = local.x - ax, dy = local.y - ay;
+          dist = Math.sqrt(dx * dx + dy * dy);
+        } else {
+          const t0 = Math.max(0, Math.min(1, ((local.x - ax) * abx + (local.y - ay) * aby) / len2));
+          const px = ax + t0 * abx, py = ay + t0 * aby;
+          const dx = local.x - px, dy = local.y - py;
+          dist = Math.sqrt(dx * dx + dy * dy);
+        }
+        if (dist < threshold && dist < bestDist) {
+          bestDist = dist;
+          best = { traceIndex: i, net: t.net, side, point: local };
+        }
       }
     }
-
-    if (bestIdx >= 0) {
-      return { traceIndex: bestIdx, net: this.board.traces[bestIdx].net };
-    }
-    return null;
+    return best;
   }
 
   // --- Click handling ---
@@ -7220,7 +7290,31 @@ export class BoardRenderer {
       }
     }
 
-    if (!this.board || !this.activeScene || !boardStore.showHoverInfo) {
+    if (!this.board || !this.activeScene) {
+      this.hideTooltip();
+      this.setHoverNet(null);
+      return;
+    }
+
+    const markerId = this.markerAtScreenPoint(e.offsetX, e.offsetY);
+    const marker = markerId ? markerStore.getById(markerId) : null;
+    if (marker) {
+      const key = `m${marker.id}`;
+      if (key === this.hoverKey && this.tooltipSize) {
+        this.repositionTooltip(e.offsetX, e.offsetY);
+        return;
+      }
+      this.hoverKey = key;
+      this.showTooltip(e.offsetX, e.offsetY, {
+        net: marker.net ?? '',
+        part: marker.name || 'Marker',
+        note: [marker.context, marker.note].filter(Boolean).join('\n'),
+      });
+      this.setHoverNet(null);
+      return;
+    }
+
+    if (!boardStore.showHoverInfo) {
       this.hideTooltip();
       this.setHoverNet(null);
       return;
@@ -7333,7 +7427,7 @@ export class BoardRenderer {
     }
   }
 
-  private showTooltip(x: number, y: number, info: { net: string; part: string; pin?: string; pinIndex?: number; value?: string; packageName?: string; diode?: string }) {
+  private showTooltip(x: number, y: number, info: { net: string; part: string; pin?: string; pinIndex?: number; value?: string; packageName?: string; diode?: string; note?: string }) {
     const el = this.tooltipEl;
     if (!el) return;
 
@@ -7345,6 +7439,10 @@ export class BoardRenderer {
     }
     if (this.tooltipDetailSpan) {
       this.tooltipDetailSpan.textContent = info.pin ? `${info.part} · pin ${info.pin}` : info.part;
+    }
+    if (this.tooltipMarkerSpan) {
+      this.tooltipMarkerSpan.textContent = info.note ?? '';
+      this.tooltipMarkerSpan.style.display = info.note ? 'block' : 'none';
     }
     // Cross-board compare line. Without it the board highlight only says
     // "this pin is different" and leaves you to go and find what it differs
@@ -7597,6 +7695,10 @@ export class BoardRenderer {
     if (resizeModeStore.enabled) {
       this.lastPointerShift = false;
       this.handleResizeClick(world);
+      return;
+    }
+    if (this.handleMarkerClick(world)) {
+      this.lastPointerShift = false;
       return;
     }
     // Slide mode: ⌘+click (Ctrl+click off macOS), or any tap with the
@@ -8068,13 +8170,53 @@ export class BoardRenderer {
       e.clientY - rect.top,
     );
     const stack = this.hitTestStack(worldPoint);
-    if (stack.length === 0) return;
-    const top = stack[0];
-    const part = this.board.parts[top.partIndex];
-    if (!part) return;
-    const pin = top.pinIndex >= 0 ? part.pins[top.pinIndex] : null;
-    const pinId = pin ? pinDisplayId(pin, top.pinIndex) : null;
-    const netName = pin?.net || null;
+    const hit = stack[0];
+    const part = hit ? this.board.parts[hit.partIndex] : null;
+    const pin = part && hit && hit.pinIndex >= 0 ? part.pins[hit.pinIndex] : null;
+    const topRoot = this.activeScene?.root;
+    const bottomRoot = boardStore.butterfly ? this.activeScene?.butterflyRoot ?? topRoot : topRoot;
+    const topPoint = this.worldToScene(worldPoint, topRoot);
+    const bottomPoint = this.worldToScene(worldPoint, bottomRoot);
+    const inBounds = (p: Point) => this.inBoardBounds(p, this.board!.bounds);
+
+    let side: 'top' | 'bottom' | 'both' = pin?.side ?? part?.side ?? this.visibleMarkerSide();
+    let boardPoint = side === 'bottom' ? bottomPoint : topPoint;
+    if (boardStore.butterfly && !part && inBounds(bottomPoint) && !inBounds(topPoint)) {
+      side = 'bottom';
+      boardPoint = bottomPoint;
+    } else if (boardStore.butterfly && !part && inBounds(topPoint)) {
+      side = 'top';
+      boardPoint = topPoint;
+    }
+
+    const pinId = pin && hit ? pinDisplayId(pin, hit.pinIndex) : null;
+    const viaTop = this.findViaAt(topPoint);
+    const viaBottom = !viaTop ? this.findViaAt(bottomPoint) : null;
+    const via = viaTop ?? viaBottom;
+    if (via) {
+      boardPoint = viaBottom ? bottomPoint : topPoint;
+      side = 'both';
+    }
+    const trace = !pin && !via ? this.traceHitTest(worldPoint) : null;
+    if (trace) {
+      boardPoint = trace.point;
+      side = trace.side;
+    }
+
+    // In board-pack all-mode each location belongs to one physical subboard.
+    // Resolve overlapping footprints to the smallest containing board.
+    const subboardIndex = this.resolveSubboardIndex(boardPoint, part);
+    if (subboardIndex === undefined) return;
+
+    if (!part && !via && !trace && !inBounds(boardPoint)) return;
+
+    const kind = via ? 'via' : pin ? 'pin' : trace ? 'trace' : part ? 'part' : 'free';
+    const contextLabel = via
+      ? via.net ? `Via · ${via.net}` : 'Via'
+      : pin ? `${part!.name} · Pin ${pinId}`
+        : trace ? `Trace · ${trace.net}`
+          : part?.name ?? 'Board location';
+    const netName = pin?.net || via?.net || trace?.net || null;
     // Every part under the point, smallest-first — the menu repeats its action
     // row per part so any stacked part can be pinned / looked up (#23). Dedupe
     // by refdes: 2-pin parts contribute both a pin and a whole-part cycle entry,
@@ -8084,7 +8226,293 @@ export class BoardRenderer {
         .map(h => this.board!.parts[h.partIndex]?.name)
         .filter((n): n is string => !!n),
     )];
-    contextMenuStore.showBoard(e.clientX, e.clientY, part.name, pinId, netName, overlap);
+    const nearbyMarkerIds = this.nearbyMarkerIds(boardPoint, side, subboardIndex);
+    contextMenuStore.showBoard(
+      e.clientX,
+      e.clientY,
+      part?.name ?? '',
+      pinId,
+      netName,
+      overlap,
+      this.tabId == null ? null : {
+        tabId: this.tabId,
+        subboardIndex,
+        boardX: boardPoint.x,
+        boardY: boardPoint.y,
+        side: via ? 'both' : side,
+        kind,
+        contextLabel,
+        netName: netName || undefined,
+        nearbyMarkerId: nearbyMarkerIds[0],
+        nearbyMarkerIds,
+      },
+    );
+  }
+
+  private visibleMarkerSide(): 'top' | 'bottom' | 'both' {
+    if (boardStore.showTop && boardStore.showBottom) return 'both';
+    return boardStore.showBottom ? 'bottom' : 'top';
+  }
+
+  private resolveSubboardIndex(point: Point, part: Part | null): number | null | undefined {
+    const board = this.board;
+    if (!board) return undefined;
+    if (boardStore.selectedBoardIndex != null) {
+      const bounds = board.boards?.[boardStore.selectedBoardIndex]?.bounds ?? board.bounds;
+      return this.inBoardBounds(point, bounds) ? boardStore.selectedBoardIndex : undefined;
+    }
+    if (!board.boards?.length) return this.inBoardBounds(point, board.bounds) ? null : undefined;
+    const candidates = board.boards
+      .map((entry, index) => ({ index, bounds: entry.bounds }))
+      .filter(candidate => this.inBoardBounds(point, candidate.bounds))
+      .sort((a, b) => (a.bounds.maxX - a.bounds.minX) * (a.bounds.maxY - a.bounds.minY)
+        - (b.bounds.maxX - b.bounds.minX) * (b.bounds.maxY - b.bounds.minY));
+    if (part?.boardIndex != null && candidates.some(candidate => candidate.index === part.boardIndex)) {
+      return part.boardIndex;
+    }
+    return candidates[0]?.index;
+  }
+
+  private inBoardBounds(point: Point, bounds: BoardData['bounds']): boolean {
+    return point.x >= bounds.minX && point.x <= bounds.maxX
+      && point.y >= bounds.minY && point.y <= bounds.maxY;
+  }
+
+  private findViaAt(point: Point) {
+    const vias = this.board?.vias ?? [];
+    const tolerance = 10 / Math.max(0.001, Math.abs(this.viewport.scale.x));
+    let best: (typeof vias)[number] | null = null;
+    let bestDistance = Infinity;
+    for (const via of vias) {
+      const distance = Math.hypot(via.position.x - point.x, via.position.y - point.y);
+      if (distance <= via.diameter / 2 + tolerance && distance < bestDistance) {
+        best = via;
+        bestDistance = distance;
+      }
+    }
+    return best;
+  }
+
+  private refreshPositionMarkers(): void {
+    const tabId = this.tabId;
+    const tab = tabId == null ? null : boardStore.tabs.find(item => item.id === tabId);
+    const board = tab?.board;
+    const version = ++this.markerRefreshVersion;
+    if (!tabId || !board) {
+      this.markerEntries = [];
+      this.drawPositionMarkers();
+      return;
+    }
+
+    const indexes: Array<number | null> = board.boards?.length
+      ? tab.selectedBoardIndex == null
+        ? board.boards.map((_, index) => index)
+        : [tab.selectedBoardIndex]
+      : [null];
+
+    void Promise.all(indexes.map(async subboardIndex => {
+      const identity = await markerStore.resolveIdentity(tabId, subboardIndex ?? 0);
+      if (!identity) return [];
+      return markerStore.getForTab(tabId, identity.fileKey, identity.subboardKey)
+        .map(marker => ({ marker, bounds: identity.bounds, subboardIndex }));
+    })).then(groups => {
+      if (this.destroyed || version !== this.markerRefreshVersion) return;
+      this.markerEntries = groups.flat();
+      this.lastMarkerViewKey = '';
+      this.drawPositionMarkers();
+    });
+  }
+
+  private markerBoardPoint(entry: { marker: Marker; bounds: BoardData['bounds'] }): Point {
+    return relativeToBoardPoint({ bounds: entry.bounds }, entry.marker);
+  }
+
+  private markerScreenPoints(side: 'top' | 'bottom'): Array<MarkerScreenPoint & { marker: Marker; boardPoint: Point }> {
+    const scene = this.activeScene;
+    if (!scene || !this.viewport) return [];
+    const root = side === 'bottom' && boardStore.butterfly && scene.butterflyRoot
+      ? scene.butterflyRoot : scene.root;
+    const markers = this.markerEntries.filter(({ marker }) => marker.side === side || marker.side === 'both');
+    return markers.map(entry => {
+      const boardPoint = this.markerBoardPoint(entry);
+      const world = this.sceneToWorld(boardPoint, root);
+      const screen = this.viewport.toScreen(world.x, world.y);
+      return { id: entry.marker.id, x: screen.x, y: screen.y, marker: entry.marker, boardPoint };
+    });
+  }
+
+  private drawPositionMarkers(): void {
+    const scene = this.activeScene;
+    if (!scene || !this.viewport) return;
+    this.lastMarkerViewKey = `${this.viewport.x}|${this.viewport.y}|${this.viewport.scale.x}|${this.viewport.scale.y}|${this.viewport.screenWidth}|${this.viewport.screenHeight}`;
+    const selected = markerStore.getSnapshot().selectedMarkerId;
+    for (const side of ['top', 'bottom'] as const) {
+      const graphics = side === 'top' ? scene.markerGraphicsTop : scene.markerGraphicsBottom;
+      const countLayer = side === 'top' ? scene.markerCountLayerTop : scene.markerCountLayerBottom;
+      const markerRoot = side === 'top' ? scene.markerRootTop : scene.markerRootBottom;
+      graphics.clear();
+      countLayer.removeChildren().forEach(child => child.destroy());
+      const visible = side === 'top'
+        ? boardStore.showTop || boardStore.butterfly
+        : boardStore.showBottom || boardStore.butterfly;
+      markerRoot.visible = visible;
+      if (!visible) continue;
+
+      const points = this.markerScreenPoints(side);
+      const clusters = clusterMarkerPoints(points);
+      for (const cluster of clusters) {
+        const members = points.filter(point => cluster.markerIds.includes(point.id));
+        if (members.length === 0) continue;
+        const x = cluster.x;
+        const y = cluster.y;
+        const marker = members.find(point => point.id === selected)?.marker ?? members[0].marker;
+        const colorText = marker.color.replace(/^#/, '');
+        const parsedColor = /^[0-9a-f]{6}$/i.test(colorText) ? Number.parseInt(colorText, 16) : 0xffcc00;
+        const height = 15;
+        const width = 12;
+        graphics.moveTo(x, y);
+        graphics.lineTo(x - width / 2, y - height * 0.42);
+        graphics.lineTo(x - width / 2, y - height);
+        graphics.lineTo(x + width / 2, y - height);
+        graphics.lineTo(x + width / 5, y - height * 0.68);
+        graphics.lineTo(x + width / 2, y - height * 0.42);
+        graphics.closePath();
+        graphics.fill({ color: parsedColor, alpha: 0.96 });
+        graphics.stroke({ color: members.some(point => point.id === selected) ? 0xffffff : 0x202020, width: 1.5 });
+        graphics.moveTo(x, y).lineTo(x, y - height * 0.42).stroke({ color: 0x202020, width: 1.5 });
+        if (members.length > 1) {
+          const label = new Text({ text: String(members.length), style: { fontSize: 10, fill: 0xffffff, fontWeight: 'bold' } });
+          label.anchor.set(0.5);
+          label.position.set(x, y - height * 0.73);
+          label.eventMode = 'none';
+          countLayer.addChild(label);
+        }
+      }
+    }
+  }
+
+  private markerAtScreenPoint(x: number, y: number): string | null {
+    const topVisible = boardStore.showTop || boardStore.butterfly;
+    const bottomVisible = boardStore.showBottom || boardStore.butterfly;
+    const points = [
+      ...(topVisible ? this.markerScreenPoints('top') : []),
+      ...(bottomVisible ? this.markerScreenPoints('bottom') : []),
+    ];
+    return findMarkerAtScreenPoint(points, x, y, 22);
+  }
+
+  private nearbyMarkerIds(point: Point, side: MarkerSide, subboardIndex: number | null): string[] {
+    const threshold = 14 / Math.max(0.001, Math.abs(this.viewport.scale.x));
+    const nearby: Array<{ id: string; distance: number }> = [];
+    for (const entry of this.markerEntries) {
+      if (entry.subboardIndex !== subboardIndex) continue;
+      if (side !== 'both' && entry.marker.side !== 'both' && entry.marker.side !== side) continue;
+      const target = this.markerBoardPoint(entry);
+      const candidate = Math.hypot(target.x - point.x, target.y - point.y);
+      if (candidate <= threshold) nearby.push({ id: entry.marker.id, distance: candidate });
+    }
+    return nearby.sort((a, b) => a.distance - b.distance).map(entry => entry.id);
+  }
+
+  private handleMarkerClick(world: Point): boolean {
+    const screen = this.viewport.toScreen(world.x, world.y);
+    const markerIds = this.markerIdsAtScreenPoint(screen.x, screen.y);
+    const markerId = markerIds[0];
+    if (!markerId || this.tabId == null) return false;
+    if (markerIds.length > 1) {
+      const first = this.markerEntries.find(entry => entry.marker.id === markerId);
+      if (first) {
+        const sides = new Set(markerIds.map(id => this.markerEntries.find(entry => entry.marker.id === id)?.marker.side));
+        const side = sides.size === 1 ? (sides.values().next().value as MarkerSide ?? 'both') : 'both';
+        const point = this.markerBoardPoint(first);
+        contextMenuStore.showBoard(this.lastPointerClient.x, this.lastPointerClient.y, '', null, null, [], {
+          tabId: this.tabId,
+          subboardIndex: first.subboardIndex,
+          boardX: point.x,
+          boardY: point.y,
+          side,
+          kind: 'free',
+          contextLabel: `${markerIds.length} markers`,
+          nearbyMarkerId: markerId,
+          nearbyMarkerIds: markerIds,
+        });
+        this.clickCycle = null;
+        this.clearPendingCycleAdvance();
+        return true;
+      }
+    }
+    markerStore.selectMarker(markerId);
+    openMarkerPanel(this.tabId, markerId);
+    this.focusMarker(markerStore.getById(markerId));
+    this.clickCycle = null;
+    this.clearPendingCycleAdvance();
+    return true;
+  }
+
+  private markerIdsAtScreenPoint(x: number, y: number): string[] {
+    const points = [
+      ...((boardStore.showTop || boardStore.butterfly) ? this.markerScreenPoints('top') : []),
+      ...((boardStore.showBottom || boardStore.butterfly) ? this.markerScreenPoints('bottom') : []),
+    ];
+    const clusters = clusterMarkerPoints(points);
+    const cluster = clusters
+      .map(item => ({ item, distance: Math.hypot(item.x - x, item.y - y) }))
+      .filter(candidate => candidate.distance <= 22)
+      .sort((a, b) => a.distance - b.distance)[0]?.item;
+    return [...new Set(cluster?.markerIds ?? [])];
+  }
+
+  private navigateToMarker(markerId: string): void {
+    if (this.tabId == null) return;
+    boardStore.switchTab(this.tabId);
+    const tabId = this.tabId;
+    openMarkerPanel(tabId, markerId);
+    void markerStore.hydrate().then(() => {
+      const marker = markerStore.getById(markerId);
+      if (!marker || this.destroyed) return;
+      markerStore.selectMarker(markerId);
+      this.openMarkerLocation(marker);
+    });
+  }
+
+  private focusMarker(marker: Marker | null): void {
+    if (!marker) return;
+    this.openMarkerLocation(marker);
+  }
+
+  private openMarkerLocation(marker: Marker | null): void {
+    if (!marker || this.tabId == null) return;
+    const tab = boardStore.tabs.find(item => item.id === this.tabId);
+    const board = tab?.board;
+    if (!board) return;
+    const indexes: Array<number | null> = board.boards?.length
+      ? board.boards.map((_, index) => index)
+      : [null];
+    void Promise.all(indexes.map(async subboardIndex => ({
+      subboardIndex,
+      identity: await markerStore.resolveIdentity(this.tabId!, subboardIndex ?? 0),
+    }))).then(entries => {
+      const target = entries.find(entry => entry.identity?.subboardKey === marker.subboardKey);
+      if (!target?.identity || this.destroyed) return;
+      if (target.subboardIndex != null && tab.selectedBoardIndex !== target.subboardIndex) {
+        boardStore.setSelectedBoardIndex(target.subboardIndex);
+      }
+      const physicalSide = marker.side === 'both' ? null : physicalSideForMarker(marker.side, tab.board?.primarySide);
+      if (marker.side === 'top' && !boardStore.showTop && physicalSide === 'top') boardStore.selectTop();
+      else if (marker.side === 'top' && !boardStore.showTop && physicalSide === 'bottom') boardStore.selectBottom();
+      else if (marker.side === 'bottom' && !boardStore.showBottom && physicalSide === 'top') boardStore.selectTop();
+      else if (marker.side === 'bottom' && !boardStore.showBottom && physicalSide === 'bottom') boardStore.selectBottom();
+      requestAnimationFrame(() => {
+        if (this.destroyed || !this.activeScene) return;
+        const point = relativeToBoardPoint({ bounds: target.identity!.bounds }, marker);
+        const root = marker.side === 'bottom' && boardStore.butterfly && this.activeScene.butterflyRoot
+          ? this.activeScene.butterflyRoot : this.activeScene.root;
+        const world = this.sceneToWorld(point, root);
+        this.viewport.moveCenter(world.x, world.y);
+        this.needsRender = true;
+        this.drawPositionMarkers();
+      });
+    });
   }
 
   /**
@@ -8272,6 +8700,7 @@ export class BoardRenderer {
     if (this.wheelIdleTimer) { clearTimeout(this.wheelIdleTimer); this.wheelIdleTimer = null; }
     if (this.followDebounceTimer) { clearTimeout(this.followDebounceTimer); this.followDebounceTimer = null; }
     this.unsubscribeBoard?.();
+    this.unsubscribeMarkers?.();
     this.unsubscribeSettings?.();
     this.unsubscribeResizeMode?.();
     this.unsubscribeTheme?.();
@@ -8280,6 +8709,7 @@ export class BoardRenderer {
     this.unsubscribeSelectionSet?.();
     this.unsubscribePartCompare?.();
     this.unsubscribeWorklist?.();
+    this.unregisterMarkerNavigation?.();
     if (this.boundPointerTravel) {
       window.removeEventListener('pointermove', this.boundPointerTravel, true);
       this.boundPointerTravel = null;
@@ -8358,6 +8788,7 @@ export class BoardRenderer {
     this.boundWheelWake = null;
     this.tooltipEl?.remove();
     this.tooltipEl = null;
+    this.tooltipMarkerSpan = null;
     // Tear down the Canvas2D label overlay (removes its containerEl-sibling canvas).
     this.textFastMode?.destroy();
     this.textFastMode = null;
