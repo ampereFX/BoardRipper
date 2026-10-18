@@ -1,6 +1,6 @@
 import type { BoardData, Pad, Pin, Point } from '../parsers/types';
 
-/** Ein Quantisierungsschritt entspricht 0,001 Board-Einheiten (üblicherweise mil). */
+/** One quantization step corresponds to 0.001 board units (usually mil). */
 const QUANTIZATION = 1e-3;
 
 interface Origin {
@@ -63,8 +63,8 @@ function allGeometryPoints(board: BoardData): Point[] {
   return points.filter(isFinitePoint);
 }
 
-/** Der geometrische Minimalpunkt ist translationsstabil und unabhängig von
- *  Array-Reihenfolgen. Erst die Differenzen zu ihm werden quantisiert. */
+/** The geometric minimum point is translation-stable and independent of array
+ *  order. Only the differences to it are quantized. */
 function geometryOrigin(board: BoardData): Origin {
   const points = allGeometryPoints(board);
   if (points.length === 0) return { x: 0, y: 0 };
@@ -101,8 +101,8 @@ function rotations(values: string[]): string[] {
   return candidates;
 }
 
-/** Konturen sind unabhängig von Startpunkt und Laufrichtung, behalten aber
- *  ihre Segmentfolge. Mehrere NaN-getrennte Konturen werden später sortiert. */
+/** Contours are independent of start point and winding direction, but keep
+ *  their segment sequence. Multiple NaN-separated contours are sorted later. */
 function canonicalContour(contour: Point[], origin: Origin): string {
   const values = contour.map((point) => pointKey(point, origin));
   while (values.length > 1 && values.at(-1) === values[0]) values.pop();
@@ -187,11 +187,11 @@ async function sha256Hex(value: string): Promise<string> {
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
-/** Berechnet den stabilen Schlüssel einer Boardgeometrie. Der
- *  occurrenceIndex unterscheidet identische Subboards innerhalb eines Packs. */
+/** Computes the stable key of a board geometry. The occurrenceIndex
+ *  distinguishes identical subboards within a pack. */
 export async function computeSubboardKey(board: BoardData, occurrenceIndex = 0): Promise<string> {
   if (!Number.isInteger(occurrenceIndex) || occurrenceIndex < 0) {
-    throw new RangeError('Der Vorkommensindex muss eine nichtnegative ganze Zahl sein.');
+    throw new RangeError('The occurrence index must be a non-negative integer.');
   }
   const digest = await sha256Hex(canonicalDescriptor(board));
   return `${digest}#${occurrenceIndex}`;
@@ -214,8 +214,8 @@ function packOrigin(boards: BoardData[]): Origin {
   };
 }
 
-/** Die Packlage wird ausschließlich aus den absoluten Board-Bounds abgeleitet.
- *  Die gemeinsame Pack-Ursprungsverschiebung macht sie translationsstabil. */
+/** The pack placement is derived exclusively from the absolute board bounds.
+ *  The shared pack origin shift makes it translation-stable. */
 function boardPlacement(board: BoardData, origin: Origin): [number, number, number, number] {
   const { minX, minY, maxX, maxY } = board.bounds;
   if (![minX, minY, maxX, maxY].every(Number.isFinite)) {
@@ -235,13 +235,13 @@ function comparePlacements(a: PackEntry, b: PackEntry): number {
       return a.placement[index] < b.placement[index] ? -1 : 1;
     }
   }
-  // Exakt deckungsgleiche Dubletten sind geometrisch nicht unterscheidbar.
-  // Der Eingabeindex ist nur für diesen Fall ein deterministischer Tie-Breaker;
-  // Namen, Netze, Pfade und Laufzeit-IDs werden nicht verwendet.
+  // Exactly coincident duplicates are geometrically indistinguishable.
+  // The input index is only a deterministic tie-breaker for that case;
+  // names, nets, paths and runtime IDs are deliberately not used.
   return a.index - b.index;
 }
 
-/** Vergibt Vorkommensindizes je Fingerprint anhand der Pack-Geometrie. */
+/** Assigns occurrence indices per fingerprint based on the pack geometry. */
 export async function computeSubboardKeys(boards: BoardData[]): Promise<string[]> {
   const descriptors = boards.map(canonicalDescriptor);
   const digests = await Promise.all(descriptors.map(sha256Hex));

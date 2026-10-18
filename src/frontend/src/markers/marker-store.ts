@@ -50,15 +50,15 @@ export interface MarkerPersistence {
 function requestResult<T>(request: IDBRequest<T>): Promise<T> {
   return new Promise((resolve, reject) => {
     request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error ?? new Error('IndexedDB-Anfrage fehlgeschlagen.'));
+    request.onerror = () => reject(request.error ?? new Error('IndexedDB request failed.'));
   });
 }
 
 function transactionDone(transaction: IDBTransaction): Promise<void> {
   return new Promise((resolve, reject) => {
     transaction.oncomplete = () => resolve();
-    transaction.onerror = () => reject(transaction.error ?? new Error('IndexedDB-Transaktion fehlgeschlagen.'));
-    transaction.onabort = () => reject(transaction.error ?? new Error('IndexedDB-Transaktion abgebrochen.'));
+    transaction.onerror = () => reject(transaction.error ?? new Error('IndexedDB transaction failed.'));
+    transaction.onabort = () => reject(transaction.error ?? new Error('IndexedDB transaction aborted.'));
   });
 }
 
@@ -69,7 +69,7 @@ class IndexedDbMarkerPersistence implements MarkerPersistence {
     if (this.dbPromise) return this.dbPromise;
     this.dbPromise = new Promise((resolve, reject) => {
       if (typeof indexedDB === 'undefined') {
-        reject(new Error('IndexedDB ist in dieser Umgebung nicht verfügbar.'));
+        reject(new Error('IndexedDB is not available in this environment.'));
         return;
       }
       const request = indexedDB.open(DB_NAME, DB_VERSION);
@@ -81,7 +81,7 @@ class IndexedDbMarkerPersistence implements MarkerPersistence {
       request.onsuccess = () => resolve(request.result);
       request.onerror = () => {
         this.dbPromise = null;
-        reject(request.error ?? new Error('Marker-Datenbank konnte nicht geöffnet werden.'));
+        reject(request.error ?? new Error('Marker database could not be opened.'));
       };
       request.onblocked = () => {
         this.dbPromise = null;
@@ -278,7 +278,7 @@ export class MarkerStore extends Emitter {
 
   createOptimistic(input: MarkerCreateInput): { marker: Marker; persisted: Promise<void> } {
     if (!Number.isFinite(input.x) || !Number.isFinite(input.y) || input.x < 0 || input.x > 1 || input.y < 0 || input.y > 1) {
-      throw new RangeError('Marker-Koordinaten müssen zwischen 0 und 1 liegen.');
+      throw new RangeError('Marker coordinates must be between 0 and 1.');
     }
     const now = Date.now();
     const marker: Marker = { ...input, id: createId(), createdAt: now, updatedAt: now };
@@ -301,7 +301,7 @@ export class MarkerStore extends Emitter {
     if (!current) return null;
     const marker = { ...current, ...patch, updatedAt: Date.now() };
     if (!Number.isFinite(marker.x) || !Number.isFinite(marker.y) || marker.x < 0 || marker.x > 1 || marker.y < 0 || marker.y > 1) {
-      throw new RangeError('Marker-Koordinaten müssen zwischen 0 und 1 liegen.');
+      throw new RangeError('Marker coordinates must be between 0 and 1.');
     }
     this.bumpRecordVersion(id);
     this.markers.set(id, marker);

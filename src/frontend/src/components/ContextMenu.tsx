@@ -434,7 +434,7 @@ export function ContextMenu() {
     try {
       const identity = await markerStore.resolveIdentity(spot.tabId, spot.subboardIndex);
       if (!identity) {
-        boardStore.addToast('Board-Position ist noch nicht verfügbar.', 'error');
+        boardStore.addToast('Board position is not available.', 'error');
         return;
       }
       const point = boardPointToRelative({ bounds: identity.bounds }, { x: spot.boardX, y: spot.boardY });
@@ -456,20 +456,20 @@ export function ContextMenu() {
       void persisted.then(() => {
         const status = markerStore.getSnapshot().runtime[marker.id];
         if (status?.status === 'error') {
-          boardStore.addToast(`Marker konnte nicht gespeichert werden: ${status.error ?? 'Unbekannter Fehler'}`, 'error');
+          boardStore.addToast(`Failed to save marker: ${status.error ?? 'Unknown error'}`, 'error');
           return;
         }
-        boardStore.addToast('Marker hinzugefügt', 'info', {
-          label: 'Rückgängig',
+        boardStore.addToast('Marker added', 'info', {
+          label: 'Undo',
           run: () => {
             void markerStore.remove(marker.id).then((removed) => {
-              if (!removed) boardStore.addToast('Marker konnte nicht gelöscht werden.', 'error');
+              if (!removed) boardStore.addToast('Failed to delete marker.', 'error');
             });
           },
         });
       });
     } catch (error) {
-      boardStore.addToast(`Marker konnte nicht erstellt werden: ${error instanceof Error ? error.message : String(error)}`, 'error');
+      boardStore.addToast(`Failed to create marker: ${error instanceof Error ? error.message : String(error)}`, 'error');
     }
   };
 

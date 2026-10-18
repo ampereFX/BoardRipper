@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect, useRef, useCallback } from 'react';
+import { useState, useMemo, useEffect, useRef, useCallback, useSyncExternalStore } from 'react';
 import {
   IconPin, IconPinFilled, IconChevronRight, IconChevronDown,
   IconInfoCircle, IconStack2, IconEye, IconSearch, IconVersions, IconChecklist, IconBook2,
@@ -24,8 +24,9 @@ import { bomReasonLabel, type BoardData, type Part } from '../parsers';
 import { pinDisplayId } from '../parsers/types';
 import { setActiveSearchInput, getActiveSearchInput } from './BoardSidebar.utils';
 import { MarkerPanel } from '../panels/MarkerPanel';
-import { registerBoardMarkerPanelHandler } from '../panels/board-viewer-bridge';
+import { registerBoardMarkerPanelHandler, navigateToMarker, openMarkerPanel } from '../panels/board-viewer-bridge';
 import { markerStore } from '../markers/marker-store';
+import type { ResolvedMarkerIdentity } from '../markers/board-identity';
 
 type SidebarTab = 'layers' | 'info' | 'search' | 'revisions' | 'worklist' | 'notes' | 'markers';
 
@@ -1079,6 +1080,24 @@ function SearchTab({ tabId }: { tabId: number }) {
   }
   const [componentsOpen, setComponentsOpen] = useState(true);
   const [netsOpen, setNetsOpen] = useState(true);
+  const [markersOpen, setMarkersOpen] = useState(true);
+
+  // Resolve marker identities for this board (one per subboard) so the search
+  // can surface markers that belong to the currently loaded file/board.
+  const [identities, setIdentities] = useState<ResolvedMarkerIdentity[]>([]);
+  const subboardCount = Math.max(1, board?.boards?.length ?? 1);
+  useEffect(() => {
+    let active = true;
+    void Promise.all(Array.from({ length: subboardCount }, (_, index) => markerStore.resolveIdentity(tabId, index))).then((resolved) => {
+      if (!active) return;
+      setIdentities(resolved.filter((entry): entry is ResolvedMarkerIdentity => entry !== null));
+    });
+    return () => { active = false; };
+  }, [tabId, subboardCount]);
+  const markerSnapshot = useSyncExternalStore(
+    (notify) => markerStore.subscribe(() => notify()),
+    () => markerStore.getSnapshot(),
+  );
   // Which part name (if any) has its net sublist expanded. Decoupled from
   // boardStore.selection so clicking a net *inside* the sublist (which clears
   // the part selection) doesn't collapse the spoiler.
@@ -1146,6 +1165,15 @@ function SearchTab({ tabId }: { tabId: number }) {
     () => ql ? sortedNets.filter(([name]) => name.toLowerCase().includes(ql)) : sortedNets,
     [sortedNets, ql],
   );
+  const matchedMarkers = useMemo(
+    () => markerSnapshot.markers
+      // Only markers that belong to one of this board's resolved identities.
+      .filter((marker) => identities.some((entry) => entry.fileKey === marker.fileKey && entry.subboardKey === marker.subboardKey))
+      // Match the search query against name, net and note.
+      .filter((marker) => !ql || [marker.name, marker.net ?? '', marker.note].some((value) => value.toLowerCase().includes(ql)))
+      .sort((a, b) => b.createdAt - a.createdAt),
+    [markerSnapshot.markers, identities, ql],
+  );
 
   // Render cap: dense boards have 5–8k parts/nets. Rendering them all
   // unvirtualized janks every keystroke; cap the DOM and show an overflow
@@ -1204,7 +1232,7 @@ function SearchTab({ tabId }: { tabId: number }) {
 
   if (!board) return <div className="panel-empty">No board loaded</div>;
 
-  const totalResults = matchedParts.length + matchedNets.length;
+  const totalResults = matchedParts.length + matchedNets.length + matchedMarkers.length;
 
   return (
     <div className="panel-content search-tab" data-testid="search-results">
@@ -1346,6 +1374,46 @@ function SearchTab({ tabId }: { tabId: number }) {
                     Showing {shownNets.length} of {matchedNets.length} — refine the search to narrow.
                   </div>
                 )}
+              </div>
+            )}
+          </div>
+
+          {/* Markers section */}
+          <div className="search-section">
+            <button className="search-section-header" onClick={() => setMarkersOpen(!markersOpen)}>
+              <span className="search-section-arrow">{markersOpen ? <IconChevronDown size={18} /> : <IconChevronRight size={18} />}</span>
+              <span className="search-section-title">Markers</span>
+              <span className="search-section-count">{matchedMarkers.length}</span>
+            </button>
+            {markersOpen && (
+              <div className="search-section-body">
+                {matchedMarkers.length === 0 && <div className="search-section-empty">No matching markers</div>}
+                {matchedMarkers.map((marker) => (
+                  <div
+                    key={marker.id}
+                    className="search-result-item marker-search-item"
+                    data-testid={`marker-search-${marker.id}`}
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => {
+                      navigateToMarker(tabId, marker.id);
+                      openMarkerPanel(tabId, marker.id);
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        navigateToMarker(tabId, marker.id);
+                        openMarkerPanel(tabId, marker.id);
+                      }
+                    }}
+                    title="Jump to marker and open it in the markers panel"
+                  >
+                    <span className="marker-search-dot" style={{ background: marker.color }} />
+                    <span className="marker-search-name">{marker.name || 'Marker'}</span>
+                    {marker.net && <span className="marker-search-net">{marker.net}</span>}
+                    {marker.note && <span className="marker-search-note">{marker.note}</span>}
+                  </div>
+                ))}
               </div>
             )}
           </div>

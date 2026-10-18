@@ -57,7 +57,7 @@ export function boardPointToRelative(board: Pick<BoardData, 'bounds'>, point: Po
   const width = maxX - minX;
   const height = maxY - minY;
   if (!Number.isFinite(width) || width <= 0 || !Number.isFinite(height) || height <= 0) {
-    throw new RangeError('Board-Bounds müssen eine positive Breite und Höhe haben.');
+    throw new RangeError('Board bounds must have a positive width and height.');
   }
   return { x: (point.x - minX) / width, y: (point.y - minY) / height };
 }
@@ -67,7 +67,7 @@ export function relativeToBoardPoint(board: Pick<BoardData, 'bounds'>, point: No
   const width = maxX - minX;
   const height = maxY - minY;
   if (!Number.isFinite(width) || width <= 0 || !Number.isFinite(height) || height <= 0) {
-    throw new RangeError('Board-Bounds müssen eine positive Breite und Höhe haben.');
+    throw new RangeError('Board bounds must have a positive width and height.');
   }
   return { x: minX + point.x * width, y: minY + point.y * height };
 }

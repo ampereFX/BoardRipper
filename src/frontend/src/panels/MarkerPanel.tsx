@@ -26,7 +26,7 @@ function useMarkerSnapshot() {
 }
 
 function sideName(side: Marker['side']): string {
-  return side === 'both' ? 'Beide Seiten' : side === 'top' ? 'Top' : 'Bottom';
+  return side === 'both' ? 'Both sides' : side === 'top' ? 'Top' : 'Bottom';
 }
 
 export function MarkerPanel({ tabId, subboardCount, focusMarkerId, onFocusHandled }: MarkerPanelProps) {
@@ -50,7 +50,7 @@ export function MarkerPanel({ tabId, subboardCount, focusMarkerId, onFocusHandle
       setResolvedIdentityState({
         key: identityRequestKey,
         identities: valid,
-        error: valid.length === 0 ? 'Board-Position ist noch nicht verfügbar.' : null,
+        error: valid.length === 0 ? 'Board position is not available.' : null,
       });
     }).catch((error: unknown) => {
       if (!active) return;
@@ -89,12 +89,12 @@ export function MarkerPanel({ tabId, subboardCount, focusMarkerId, onFocusHandle
     const removed = await markerStore.remove(marker.id);
     if (!removed) {
       const error = markerStore.getSnapshot().runtime[marker.id]?.error;
-      boardStore.addToast(`Marker konnte nicht gelöscht werden${error ? `: ${error}` : '.'}`, 'error');
+      boardStore.addToast(`Failed to delete marker${error ? `: ${error}` : '.'}`, 'error');
       return;
     }
     markerStore.selectMarker(null);
-    boardStore.addToast(`Marker „${marker.name || 'Ohne Namen'}“ gelöscht`, 'info', {
-      label: 'Rückgängig',
+    boardStore.addToast(`Marker “${marker.name || 'Unnamed'}” deleted`, 'info', {
+      label: 'Undo',
       run: () => { void markerStore.restore(marker); },
     });
   };
@@ -106,7 +106,7 @@ export function MarkerPanel({ tabId, subboardCount, focusMarkerId, onFocusHandle
       <header className="marker-panel__header">
         <div>
           <h2>Markers</h2>
-          <p>Positionen auf diesem Board</p>
+          <p>Positions on this board</p>
         </div>
         <span className="marker-panel__count" aria-label={`${markers.length} Marker`}>
           {markers.length}
@@ -119,7 +119,7 @@ export function MarkerPanel({ tabId, subboardCount, focusMarkerId, onFocusHandle
           type="search"
           value={query}
           onChange={(event) => setQuery(event.target.value)}
-          placeholder="Name, Net oder Notiz suchen"
+          placeholder="Search name, net or note"
           aria-label="Marker suchen"
           data-testid="marker-search"
         />
@@ -127,19 +127,19 @@ export function MarkerPanel({ tabId, subboardCount, focusMarkerId, onFocusHandle
 
       {databaseError && (
         <div className="marker-panel__error" role="alert">
-          <span>Marker konnten nicht geladen werden: {databaseError}</span>
+          <span>Failed to load markers: {databaseError}</span>
           <button type="button" onClick={() => void markerStore.retry('$database')}>
             <IconRefresh size={14} /> Erneut versuchen
           </button>
         </div>
       )}
       {identityError && <div className="marker-panel__empty" role="status">{identityError}</div>}
-      {!identityError && identities.length === 0 && <div className="marker-panel__empty" role="status">Marker werden geladen…</div>}
+      {!identityError && identities.length === 0 && <div className="marker-panel__empty" role="status">Loading markers…</div>}
       {identities.length > 0 && markers.length === 0 && (
         <div className="marker-panel__empty" data-testid="marker-empty">
           <IconMapPin size={22} aria-hidden="true" />
           <strong>{query ? 'Keine Treffer' : 'Noch keine Marker'}</strong>
-          <span>{query ? 'Passe den Suchbegriff an.' : 'Rechtsklicke auf das Board und markiere eine Position.'}</span>
+          <span>{query ? 'Adjust the search term.' : 'Right-click on the board to mark a position.'}</span>
         </div>
       )}
 
@@ -203,8 +203,8 @@ function MarkerRow({
         className="marker-row__navigate"
         type="button"
         onClick={onSelect}
-        aria-label={`Board-Position von ${marker.name || 'Marker'} öffnen`}
-        title="Board-Position öffnen"
+        aria-label={`Open board position of ${marker.name || 'Marker'}`}
+        title="Open board position"
       >
         <span className="marker-row__swatch" style={{ backgroundColor: marker.color }} />
         <span className="marker-row__heading">
@@ -221,25 +221,25 @@ function MarkerRow({
             <input
               value={marker.name}
               onChange={(event) => { void markerStore.update(marker.id, { name: event.target.value }); }}
-              aria-label={`Name für ${marker.name || 'Marker'}`}
+              aria-label={`Name for ${marker.name || 'Marker'}`}
               data-testid={`marker-name-${marker.id}`}
             />
           </label>
           <label className="marker-row__field">
-            <span>Notiz</span>
+            <span>Note</span>
             <textarea
               ref={noteRef}
               value={marker.note}
               onChange={(event) => { void markerStore.update(marker.id, { note: event.target.value }); }}
-              placeholder="Notiz hinzufügen…"
-              aria-label={`Notiz für ${marker.name || 'Marker'}`}
+              placeholder="Add a note…"
+              aria-label={`Note for ${marker.name || 'Marker'}`}
               data-testid={`marker-note-${marker.id}`}
               rows={2}
             />
           </label>
         </>
       ) : (
-        <p className="marker-row__preview">{marker.note || 'Keine Notiz'}</p>
+        <p className="marker-row__preview">{marker.note || 'No note'}</p>
       )}
 
       <div className="marker-row__footer">
@@ -265,15 +265,15 @@ function MarkerRow({
           </label>
         </div>}
         <span className={`marker-row__status marker-row__status--${runtime?.status ?? 'saved'}`} role="status">
-          {runtime?.status === 'pending' ? 'Speichert…' : runtime?.status === 'error' ? 'Fehler' : 'Gespeichert'}
+          {runtime?.status === 'pending' ? 'Saving…' : runtime?.status === 'error' ? 'Error' : 'Saved'}
         </span>
-        <button type="button" className="marker-row__delete" onClick={onDelete} aria-label={`Marker ${marker.name || 'ohne Namen'} löschen`}>
+        <button type="button" className="marker-row__delete" onClick={onDelete} aria-label={`Delete marker ${marker.name || 'Unnamed'}`}>
           <IconTrash size={15} />
         </button>
       </div>
       {runtime?.status === 'error' && (
         <div className="marker-row__error" role="alert">
-          <span>{runtime.error ?? 'Änderung konnte nicht gespeichert werden.'}</span>
+          <span>{runtime.error ?? 'Failed to save changes.'}</span>
           <button type="button" onClick={() => void markerStore.retry(marker.id)}>
             <IconRefresh size={14} /> Erneut versuchen
           </button>

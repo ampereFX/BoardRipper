@@ -131,7 +131,7 @@ describe('MarkerPanel', () => {
       expect.stringContaining('older'),
     ]);
     expect(rows[0].textContent).toContain('Board 2 · 1500, 500 mil');
-    expect(rows[0].textContent).toContain('Beide Seiten');
+    expect(rows[0].textContent).toContain('Both sides');
   });
 
   it('filters by net and note, and focuses the note only for the requested marker', async () => {
@@ -180,13 +180,13 @@ describe('MarkerPanel', () => {
     const container = renderPanel();
     await act(async () => { await Promise.resolve(); });
     await act(async () => {
-      container.querySelector<HTMLButtonElement>('[aria-label="Marker first löschen"]')?.click();
+      container.querySelector<HTMLButtonElement>('[aria-label="Delete marker first"]')?.click();
       await Promise.resolve();
     });
 
     const toast = mocks.addToast.mock.calls.at(-1);
-    expect(toast?.[0]).toContain('gelöscht');
-    expect(toast?.[2]?.label).toBe('Rückgängig');
+    expect(toast?.[0]).toContain('deleted');
+    expect(toast?.[2]?.label).toBe('Undo');
     await act(async () => { await toast?.[2]?.run(); });
     expect(mocks.markerStore.restore).toHaveBeenCalledWith(expect.objectContaining({ id: 'first' }));
   });

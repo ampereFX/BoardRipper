@@ -8368,22 +8368,19 @@ export class BoardRenderer {
         const marker = members.find(point => point.id === selected)?.marker ?? members[0].marker;
         const colorText = marker.color.replace(/^#/, '');
         const parsedColor = /^[0-9a-f]{6}$/i.test(colorText) ? Number.parseInt(colorText, 16) : 0xffcc00;
-        const height = 15;
-        const width = 12;
-        graphics.moveTo(x, y);
-        graphics.lineTo(x - width / 2, y - height * 0.42);
-        graphics.lineTo(x - width / 2, y - height);
-        graphics.lineTo(x + width / 2, y - height);
-        graphics.lineTo(x + width / 5, y - height * 0.68);
-        graphics.lineTo(x + width / 2, y - height * 0.42);
-        graphics.closePath();
-        graphics.fill({ color: parsedColor, alpha: 0.96 });
-        graphics.stroke({ color: members.some(point => point.id === selected) ? 0xffffff : 0x202020, width: 1.5 });
-        graphics.moveTo(x, y).lineTo(x, y - height * 0.42).stroke({ color: 0x202020, width: 1.5 });
-        if (members.length > 1) {
+        // A centred highlight instead of a pin: the marker sits exactly on the
+        // board point it represents, so the spot itself is what gets marked.
+        const isCluster = members.length > 1;
+        const dotRadius = isCluster ? 10 : 4;
+        const ringRadius = dotRadius + 5;
+        graphics.circle(x, y, dotRadius);
+        graphics.fill({ color: parsedColor, alpha: 1 });
+        graphics.circle(x, y, ringRadius);
+        graphics.stroke({ color: members.some(point => point.id === selected) ? 0xffffff : parsedColor, width: 2, alpha: 0.9 });
+        if (isCluster) {
           const label = new Text({ text: String(members.length), style: { fontSize: 10, fill: 0xffffff, fontWeight: 'bold' } });
           label.anchor.set(0.5);
-          label.position.set(x, y - height * 0.73);
+          label.position.set(x, y);
           label.eventMode = 'none';
           countLayer.addChild(label);
         }
