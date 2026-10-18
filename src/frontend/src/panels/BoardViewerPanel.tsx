@@ -51,7 +51,7 @@ export function BoardViewerPanel(props: IDockviewPanelProps<{ boardTabId?: numbe
   const bareAction = useBareScrollAction();
   const renderSettings = useRenderSettings();
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [sidebarTab, setSidebarTab] = useState<'layers' | 'info' | 'search' | 'worklist' | null>(null);
+  const [sidebarTab, setSidebarTab] = useState<'layers' | 'info' | 'search' | 'worklist' | 'markers' | null>(null);
   const overlayCollapsed = useOverlayCollapsed();
   const [barMenu, setBarMenu] = useState<{ x: number; y: number } | null>(null);
   const closeBarMenu = useCallback(() => setBarMenu(null), []);

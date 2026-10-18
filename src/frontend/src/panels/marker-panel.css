@@ -1,0 +1,308 @@
+.marker-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  height: 100%;
+  overflow: auto;
+  padding: 10px;
+  color: var(--text-primary);
+}
+
+.marker-panel__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.marker-panel__header h2 {
+  margin: 0;
+  font-size: 1.05rem;
+}
+
+.marker-panel__header p,
+.marker-row__heading small {
+  margin: 3px 0 0;
+  color: var(--text-secondary);
+  font-size: 0.8rem;
+}
+
+.marker-panel__count {
+  min-width: 24px;
+  padding: 3px 7px;
+  border-radius: 12px;
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  font-size: 0.8rem;
+  text-align: center;
+}
+
+.marker-panel__search {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 34px;
+  padding: 0 9px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+}
+
+.marker-panel__search input {
+  width: 100%;
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--text-primary);
+  font: inherit;
+}
+
+.marker-panel__empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 7px;
+  padding: 20px 10px;
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+  text-align: center;
+}
+
+.marker-panel__empty strong {
+  color: var(--text-primary);
+}
+
+.marker-panel__list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.marker-row {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  padding: 9px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-secondary);
+}
+
+.marker-row.is-selected {
+  border-color: var(--accent);
+}
+
+.marker-row__navigate {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  width: 100%;
+  min-height: 38px;
+  padding: 2px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.marker-row__navigate:focus-visible,
+.marker-row__field input:focus-visible,
+.marker-row__field textarea:focus-visible,
+.marker-row button:focus-visible,
+.marker-row__custom-color:focus-within {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.marker-row__swatch {
+  flex: 0 0 12px;
+  width: 12px;
+  height: 12px;
+  margin-top: 4px;
+  border: 1px solid color-mix(in srgb, var(--text-primary) 25%, transparent);
+  border-radius: 50%;
+}
+
+.marker-row__heading {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.marker-row__heading strong {
+  overflow: hidden;
+  font-size: 0.9rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.marker-row__heading small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.marker-row__heading .marker-row__net {
+  color: var(--text-primary);
+}
+
+.marker-row__preview {
+  display: -webkit-box;
+  overflow: hidden;
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 0.8rem;
+  line-height: 1.35;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.marker-row__field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  color: var(--text-secondary);
+  font-size: 0.74rem;
+}
+
+.marker-row__field input,
+.marker-row__field textarea {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 6px 7px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 0.83rem;
+  resize: vertical;
+}
+
+.marker-row__footer {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 30px;
+}
+
+.marker-row__colors {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-right: auto;
+}
+
+.marker-row__color,
+.marker-row__custom-color {
+  width: 21px;
+  height: 21px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+.marker-row__color.is-current {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.marker-row__custom-color {
+  display: grid;
+  overflow: hidden;
+  place-items: center;
+  background: conic-gradient(red, yellow, lime, aqua, blue, magenta, red);
+}
+
+.marker-row__custom-color input {
+  width: 15px;
+  height: 15px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+.marker-row__status {
+  color: var(--text-secondary);
+  font-size: 0.72rem;
+}
+
+.marker-row__status--error,
+.marker-row__error,
+.marker-panel__error {
+  color: var(--danger, #d64b4b);
+}
+
+.marker-row__delete,
+.marker-row__error button,
+.marker-panel__error button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-width: 32px;
+  min-height: 32px;
+  padding: 4px 7px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.marker-row__delete:hover,
+.marker-row__error button:hover,
+.marker-panel__error button:hover {
+  background: color-mix(in srgb, var(--bg-primary) 70%, var(--danger, #d64b4b));
+}
+
+.marker-row__error,
+.marker-panel__error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 0.78rem;
+}
+
+.marker-panel__error {
+  padding: 8px;
+  border: 1px solid color-mix(in srgb, var(--danger, #d64b4b) 45%, var(--border));
+  border-radius: 5px;
+}
+
+.context-menu-marker-location {
+  max-width: 280px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.context-menu-marker-action {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 34px;
+}
+
+.context-menu-marker-action:focus-visible,
+.context-menu-variant-row[role="button"]:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.context-menu-marker-hint {
+  margin-left: auto;
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+}

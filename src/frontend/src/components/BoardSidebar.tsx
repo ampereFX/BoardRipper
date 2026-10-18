@@ -2,6 +2,7 @@ import { useState, useMemo, useEffect, useRef, useCallback } from 'react';
 import {
   IconPin, IconPinFilled, IconChevronRight, IconChevronDown,
   IconInfoCircle, IconStack2, IconEye, IconSearch, IconVersions, IconChecklist, IconBook2,
+  IconMapPin,
 } from '@tabler/icons-react';
 import { IconHistory } from '@tabler/icons-react';
 import { useBoardStore } from '../hooks/useBoardStore';
@@ -22,8 +23,11 @@ import { boardKnowledge } from '../store/board-knowledge';
 import { bomReasonLabel, type BoardData, type Part } from '../parsers';
 import { pinDisplayId } from '../parsers/types';
 import { setActiveSearchInput, getActiveSearchInput } from './BoardSidebar.utils';
+import { MarkerPanel } from '../panels/MarkerPanel';
+import { registerBoardMarkerPanelHandler } from '../panels/board-viewer-bridge';
+import { markerStore } from '../markers/marker-store';
 
-type SidebarTab = 'layers' | 'info' | 'search' | 'revisions' | 'worklist' | 'notes';
+type SidebarTab = 'layers' | 'info' | 'search' | 'revisions' | 'worklist' | 'notes' | 'markers';
 
 const EMPTY_GHOST_SWAPS: ReadonlySet<string> = new Set();
 const EMPTY_BOM_SELECTIONS: ReadonlyMap<string, string> = new Map();
@@ -98,11 +102,22 @@ export function BoardSidebar({ visible, tabId, requestedTab, onTabApplied }: Boa
   // case where the board is already present at mount (no flash); the effect
   // below corrects it once a board finishes loading.
   const [activeTab, setActiveTab] = useState<SidebarTab>(hasLayers ? 'layers' : 'info');
+  const [focusMarkerId, setFocusMarkerId] = useState<string | null>(null);
   // True once the user (or an external request) has explicitly chosen a tab,
   // so the per-board default never clobbers a deliberate selection.
   const userPickedTabRef = useRef(false);
   const lastBoardRef = useRef(board);
   const pickTab = (t: SidebarTab) => { userPickedTabRef.current = true; setActiveTab(t); };
+
+  useEffect(() => {
+    if (tabId == null) return;
+    return registerBoardMarkerPanelHandler(tabId, (markerId?: string, focusNote = false) => {
+      userPickedTabRef.current = true;
+      setFocusMarkerId(focusNote ? markerId ?? null : null);
+      markerStore.selectMarker(markerId ?? null);
+      setActiveTab('markers');
+    });
+  }, [tabId]);
 
   // Apply the per-board default when a board first loads / changes in this panel.
   useEffect(() => {
@@ -255,6 +270,16 @@ export function BoardSidebar({ visible, tabId, requestedTab, onTabApplied }: Boa
             <IconChecklist size={16} />
             {activeTab === 'worklist' && <span className="icon-tab-caption">Worklist</span>}
           </button>
+          <button
+            className={`library-tab icon-tab ${activeTab === 'markers' ? 'active' : ''}`}
+            data-board-tab="markers"
+            onClick={() => { setFocusMarkerId(null); pickTab('markers'); markerStore.selectMarker(null); }}
+            data-title="Markers"
+            aria-label="Markers"
+          >
+            <IconMapPin size={16} />
+            {activeTab === 'markers' && <span className="icon-tab-caption">Markers</span>}
+          </button>
         </div>
       </div>
       <div className="board-sidebar-content">
@@ -264,6 +289,7 @@ export function BoardSidebar({ visible, tabId, requestedTab, onTabApplied }: Boa
         {activeTab === 'revisions' && showRevisionsTab && <RevisionsTab tabId={tabId} />}
         {activeTab === 'worklist' && <WorklistPanel />}
         {activeTab === 'notes' && showNotesTab && <NotesTab tabId={tabId} />}
+        {activeTab === 'markers' && <MarkerPanel tabId={tabId} subboardCount={Math.max(1, tab?.board?.boards?.length ?? 1)} focusMarkerId={focusMarkerId} onFocusHandled={() => setFocusMarkerId(null)} />}
       </div>
     </div>
   );

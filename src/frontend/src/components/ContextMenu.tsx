@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useSyncExternalStore, useState } from 'react';
 import { addWatermarkTerm } from '../store/pdf-filter-actions';
-import { IconCopy, IconWorld, IconPin, IconPinFilled, IconShieldPlus } from '@tabler/icons-react';
+import { IconCopy, IconWorld, IconPin, IconPinFilled, IconShieldPlus, IconMapPin } from '@tabler/icons-react';
 import { contextMenuStore } from '../store/context-menu-store';
 import type { ContextMenuState } from '../store/context-menu-store';
 import { boardStore } from '../store/board-store';
@@ -16,6 +16,9 @@ import { fileInputRefs } from '../store/file-inputs';
 import { findInBoardTab, countInBoardTab, findInPdf } from '../store/cross-target-search';
 import { SearchScopeBadge } from './SearchScopeBadge';
 import { copyText } from '../clipboard';
+import { markerStore } from '../markers/marker-store';
+import { boardPointToRelative } from '../markers/board-identity';
+import { navigateToMarker, openMarkerPanel } from '../panels/board-viewer-bridge';
 
 /**
  * ============================================================================
@@ -97,6 +100,7 @@ export function ContextMenu() {
   const state = useSyncExternalStore(subscribe, getSnapshot);
   const menuRef = useRef<HTMLDivElement>(null);
   const [expandedSpoilers, setExpandedSpoilers] = useState<Set<string>>(new Set());
+  const [showMarkerSideChoices, setShowMarkerSideChoices] = useState(false);
   const toggleSpoiler = (key: string) => {
     setExpandedSpoilers(prev => {
       const next = new Set(prev);
@@ -131,7 +135,10 @@ export function ContextMenu() {
   const [trackedVisible, setTrackedVisible] = useState(false);
   if (state.visible !== trackedVisible) {
     setTrackedVisible(state.visible);
-    if (state.visible && expandedSpoilers.size > 0) setExpandedSpoilers(new Set());
+    if (state.visible) {
+      setShowMarkerSideChoices(false);
+      if (expandedSpoilers.size > 0) setExpandedSpoilers(new Set());
+    }
   }
 
   useEffect(() => {
@@ -413,6 +420,59 @@ export function ContextMenu() {
     }
   };
 
+  const openMarker = (markerId: string, tabId: number) => {
+    contextMenuStore.hide();
+    markerStore.selectMarker(markerId);
+    openMarkerPanel(tabId, markerId);
+    navigateToMarker(tabId, markerId);
+  };
+
+  const createMarkerAtSpot = async (side: 'top' | 'bottom' | 'both') => {
+    const spot = state.boardSpot;
+    if (!spot) return;
+    contextMenuStore.hide();
+    try {
+      const identity = await markerStore.resolveIdentity(spot.tabId, spot.subboardIndex);
+      if (!identity) {
+        boardStore.addToast('Board-Position ist noch nicht verfügbar.', 'error');
+        return;
+      }
+      const point = boardPointToRelative({ bounds: identity.bounds }, { x: spot.boardX, y: spot.boardY });
+      const { marker, persisted } = markerStore.createOptimistic({
+        fileKey: identity.fileKey,
+        subboardKey: identity.subboardKey,
+        ...point,
+        side,
+        name: spot.contextLabel.trim() || spot.netName?.trim() || 'Marker',
+        net: spot.netName?.trim() || null,
+        note: '',
+        color: '#e45757',
+        context: spot.contextLabel.trim() || null,
+      });
+      // create() publishes its optimistic record synchronously, before the
+      // IndexedDB write settles. Open the panel at once so the note is ready.
+      markerStore.selectMarker(marker.id);
+      openMarkerPanel(spot.tabId, marker.id, true);
+      void persisted.then(() => {
+        const status = markerStore.getSnapshot().runtime[marker.id];
+        if (status?.status === 'error') {
+          boardStore.addToast(`Marker konnte nicht gespeichert werden: ${status.error ?? 'Unbekannter Fehler'}`, 'error');
+          return;
+        }
+        boardStore.addToast('Marker hinzugefügt', 'info', {
+          label: 'Rückgängig',
+          run: () => {
+            void markerStore.remove(marker.id).then((removed) => {
+              if (!removed) boardStore.addToast('Marker konnte nicht gelöscht werden.', 'error');
+            });
+          },
+        });
+      });
+    } catch (error) {
+      boardStore.addToast(`Marker konnte nicht erstellt werden: ${error instanceof Error ? error.message : String(error)}`, 'error');
+    }
+  };
+
   /** Render a value chip: the value text + small action icons (copy /
    *  optional search / optional worklist). Click on the text itself is a
    *  shortcut for Copy. Compresses the previous three-row Copy/Search/
@@ -630,6 +690,121 @@ export function ContextMenu() {
       );
     })() : null;
 
+    const spot = state.boardSpot;
+    const nearbyMarkerIds = spot?.nearbyMarkerIds?.length
+      ? spot.nearbyMarkerIds
+      : spot?.nearbyMarkerId ? [spot.nearbyMarkerId] : [];
+    const nearbyMarkers = nearbyMarkerIds.map((id) => markerStore.getById(id)).filter((marker) => marker !== null);
+    const markerLocation = spot
+      ? `${spot.contextLabel || 'Board location'} · ${Math.round(spot.boardX)}, ${Math.round(spot.boardY)} mil`
+      : '';
+    const needsSideChoice = !!spot && spot.side === 'both' && spot.kind !== 'via';
+    const markerItems = spot ? (
+      <React.Fragment key="board-markers">
+        <div className="context-menu-group-header context-menu-marker-location" data-testid="marker-location">
+          {markerLocation}
+        </div>
+        {nearbyMarkerIds.length > 0 && (
+          <>
+            {nearbyMarkerIds.map((markerId) => {
+              const marker = nearbyMarkers.find((entry) => entry.id === markerId);
+              const label = nearbyMarkerIds.length > 1
+                ? `Open ${marker?.name || 'marker'}`
+                : `Open marker${marker?.name ? ` · ${marker.name}` : ''}`;
+              return (
+                <div
+                  key={markerId}
+                  className="context-menu-item context-menu-marker-action"
+                  data-testid={nearbyMarkerIds.length > 1 ? `open-marker-${markerId}` : 'open-nearby-marker'}
+                  role="button"
+                  tabIndex={0}
+                  onClick={(e) => { e.stopPropagation(); openMarker(markerId, spot.tabId); }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      openMarker(markerId, spot.tabId);
+                    }
+                  }}
+                >
+                  <IconMapPin size={14} /> {label}
+                </div>
+              );
+            })}
+            <div
+              className="context-menu-item context-menu-marker-action"
+              data-testid="add-another-marker"
+              role="button"
+              tabIndex={0}
+              onClick={(e) => {
+                e.stopPropagation();
+                if (needsSideChoice) setShowMarkerSideChoices(true);
+                else void createMarkerAtSpot(spot.side);
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  if (needsSideChoice) setShowMarkerSideChoices(true);
+                  else void createMarkerAtSpot(spot.side);
+                }
+              }}
+              >
+                <IconMapPin size={14} /> Add another marker here
+            </div>
+          </>
+        )}
+        {nearbyMarkerIds.length === 0 && (
+          <>
+            <div
+              className="context-menu-item context-menu-marker-action"
+              data-testid="mark-this-spot"
+              role="button"
+              tabIndex={0}
+              onClick={(e) => {
+                e.stopPropagation();
+                if (needsSideChoice) setShowMarkerSideChoices((open) => !open);
+                else void createMarkerAtSpot(spot.side);
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  if (needsSideChoice) setShowMarkerSideChoices((open) => !open);
+                  else void createMarkerAtSpot(spot.side);
+                }
+              }}
+              aria-expanded={needsSideChoice ? showMarkerSideChoices : undefined}
+              title={`Mark this spot · ${markerLocation}`}
+            >
+              <IconMapPin size={14} /> Mark this spot
+              {needsSideChoice && <span className="context-menu-marker-hint">Choose side</span>}
+            </div>
+          </>
+        )}
+        {needsSideChoice && showMarkerSideChoices && (
+          <div className="context-menu-variant-group" data-testid="marker-side-choices">
+            {(['top', 'bottom', 'both'] as const).map((side) => (
+              <div
+                key={side}
+                className="context-menu-item context-menu-variant-row"
+                data-testid={`mark-spot-${side}`}
+                role="button"
+                tabIndex={0}
+                onClick={(e) => { e.stopPropagation(); void createMarkerAtSpot(side); }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    void createMarkerAtSpot(side);
+                  }
+                }}
+              >
+                {side === 'top' ? 'Mark top side' : side === 'bottom' ? 'Mark bottom side' : 'Mark both sides'}
+              </div>
+            ))}
+          </div>
+        )}
+        <div className="context-menu-separator" />
+      </React.Fragment>
+    ) : null;
+
     const nothingToSearch =
       boundOpen.length === 0 &&
       otherPdfNames.length === 0 &&
@@ -639,10 +814,11 @@ export function ContextMenu() {
       // Still show the "Search all donors" escape hatch when no PDFs are open.
       return (
         <>
+          {markerItems}
           {partVisibilityItems}
-          <div className="context-menu-item disabled">
+          {componentName.trim() && <div className="context-menu-item disabled">
             Search &apos;{componentName}&apos; in PDF (none open)
-          </div>
+          </div>}
           {componentName.trim() && (
             <>
               <div className="context-menu-separator" />
@@ -660,6 +836,7 @@ export function ContextMenu() {
     }
 
     const sections: React.ReactNode[] = [];
+    if (markerItems) sections.push(markerItems);
     if (partVisibilityItems) sections.push(partVisibilityItems);
 
     // Helper: emit one donor row for a PDF. The row click triggers the

@@ -21,6 +21,22 @@ export interface ContextMenuState {
   query: string;
   /** PDF filename the click originated in — used to exclude it from "Other PDFs" */
   originPdfFileName: string;
+  /** Board-local context for creating or editing a position marker. Coordinates
+   *  are in board mils; the marker store resolves tab/subboard identity. */
+  boardSpot: BoardSpotContext | null;
+}
+
+export interface BoardSpotContext {
+  tabId: number;
+  subboardIndex: number | null;
+  boardX: number;
+  boardY: number;
+  side: 'top' | 'bottom' | 'both';
+  kind: 'via' | 'pin' | 'trace' | 'part' | 'free';
+  contextLabel: string;
+  netName?: string;
+  nearbyMarkerId?: string;
+  nearbyMarkerIds?: string[];
 }
 
 const emptyState: ContextMenuState = {
@@ -34,6 +50,7 @@ const emptyState: ContextMenuState = {
   netName: null,
   query: '',
   originPdfFileName: '',
+  boardSpot: null,
 };
 
 class ContextMenuStore extends Emitter {
@@ -50,6 +67,7 @@ class ContextMenuStore extends Emitter {
     pinId: string | null = null,
     netName: string | null = null,
     overlap: string[] = [],
+    boardSpot: BoardSpotContext | null = null,
   ) {
     this._state = {
       ...emptyState,
@@ -58,9 +76,10 @@ class ContextMenuStore extends Emitter {
       screenY,
       source: 'board',
       componentName,
-      overlap: overlap.length > 0 ? overlap : [componentName],
+      overlap: overlap.length > 0 ? overlap : componentName ? [componentName] : [],
       pinId,
       netName,
+      boardSpot,
     };
     this.notify();
   }
